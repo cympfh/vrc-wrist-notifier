@@ -1,0 +1,13 @@
+[Unit]
+Description=vrc-wrist-notifier: VRChat notifications as SteamVR toasts
+After=steamvr.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/opt/vrc-wrist-notifier/wrist-toast
+Restart=on-failure
+RestartSec=10
+Nice=5
+
+[Install]
+WantedBy=default.target
