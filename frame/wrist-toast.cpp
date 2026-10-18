@@ -28,12 +28,13 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.3.1";
+static const char* kVersion = "0.4.3";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -65,6 +66,7 @@ struct Config {
     std::string history_dir;          // 空なら ~/.local/state/vrc-wrist-notifier
     bool history_panel = true;        // ダッシュボードに履歴のパネルを出す
     double panel_width_m = 2.6;
+    std::string notify_people = "all";   // 参加・退出のカード: all（全員）/ friends（フレンドのみ）/ off。パネルから変えると書き換わる
 };
 
 static std::string trim(const std::string& s) {
@@ -96,12 +98,45 @@ static bool load_config(const std::string& path, Config& c) {
             else if (k == "history_dir") c.history_dir = v;
             else if (k == "history_panel") c.history_panel = (v == "true" || v == "1" || v == "yes");
             else if (k == "panel_width_m") c.panel_width_m = std::stod(v);
+            else if (k == "notify_people") c.notify_people = (v == "friends" || v == "off") ? v : "all";
             else logf("警告: 知らない設定項目 %s は無視します", k.c_str());
         } catch (...) {
             logf("警告: %s の値 %s が読めません", k.c_str(), v.c_str());
         }
     }
     return true;
+}
+
+// 設定ファイルの 1 項目だけ書き換える（ほかの行とコメントはそのまま。無ければ足す、ファイルが無ければ作る）
+static bool save_config_value(const std::string& path, const std::string& key, const std::string& value) {
+    std::vector<std::string> lines;
+    {
+        std::ifstream f(path);
+        std::string line;
+        while (std::getline(f, line)) lines.push_back(line);
+    }
+    bool found = false;
+    for (auto& l : lines) {
+        std::string t = trim(l);
+        if (t.empty() || t[0] == '#' || t[0] == ';') continue;
+        size_t eq = t.find('=');
+        if (eq != std::string::npos && trim(t.substr(0, eq)) == key) { l = key + " = " + value; found = true; }
+    }
+    if (!found) lines.push_back(key + " = " + value);
+    std::string dir = path.substr(0, path.rfind('/'));
+    std::string acc;
+    for (size_t i = 0; i <= dir.size(); i++) {
+        if ((i == dir.size() || dir[i] == '/') && !acc.empty()) mkdir(acc.c_str(), 0700);
+        if (i < dir.size()) acc += dir[i];
+    }
+    std::string tmp = path + ".tmp";
+    {
+        std::ofstream o(tmp);
+        if (!o) return false;
+        for (auto& l : lines) o << l << "\n";
+        if (!o) return false;
+    }
+    return std::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
 // ------------------------------------------------------------------ OSC（受信だけ）
@@ -193,7 +228,46 @@ static std::string clean_wid(const std::string& s) {
 // ------------------------------------------------------------------ 描画
 struct Toast {
     std::string kind, title, text;
+    bool fr = false;   // 先頭の名前がフレンド（0.4.0 から。まとめカードなら「〜 さんほか N 人」の名前の部分だけ黄色）
+    bool me = false;   // 先頭の名前が自分（0.4.1 から。水色）
 };
+
+// まとめカードのタイトル「名前 さんほか N 人」を、名前と残りに分ける（まとめでなければ残りは空）
+static void split_summary(const std::string& title, std::string& name, std::string& rest) {
+    static const std::string mark = " さんほか ";
+    size_t i = title.rfind(mark);
+    if (i == std::string::npos || i == 0) { name = title; rest.clear(); return; }
+    name = title.substr(0, i);
+    rest = title.substr(i);
+}
+
+// 「通知設定」でカードを選ぶ。オフならどの種類も出さない。フレンドのみは参加・退出だけに効き、ほかの種類（ワールド、招待、warn、care など）はそのまま。
+// friends / self_name: 0.4.1 の Windows 側が付ける、そのカードに入っているフレンドの名前と自分の名前（has_names = 付いていた）。
+// フレンドのみのときは、自分とフレンドだけで数えなおす（自分が先頭。2 人までは 1 人ずつ、3 人以上は「名前 さんほか N 人」）
+static std::vector<Toast> filter_people(const Toast& t, const std::string& mode, bool has_names, const std::vector<std::string>& friends,
+                                        const std::string& self_name = "") {
+    if (mode == "off") return {};
+    if (t.kind != "join" && t.kind != "leave") return {t};
+    if (mode != "friends") return {t};
+    std::string n, rest;
+    split_summary(t.title, n, rest);
+    if (!has_names) {   // 0.4.0 の Windows 側: 1 人のカードだけ判断できる
+        if (t.fr && rest.empty()) return {t};
+        return {};
+    }
+    std::string verb = t.kind == "join" ? "参加" : "退出";
+    std::vector<std::string> people;
+    if (!self_name.empty()) people.push_back(self_name);
+    people.insert(people.end(), friends.begin(), friends.end());
+    auto is_me = [&](size_t i) { return i == 0 && !self_name.empty(); };
+    std::vector<Toast> out;
+    if (people.size() >= 3) {
+        out.push_back({t.kind, people[0] + " さんほか " + std::to_string(people.size() - 1) + " 人", "が" + verb, !is_me(0), is_me(0)});
+    } else {
+        for (size_t i = 0; i < people.size(); i++) out.push_back({t.kind, people[i], "が" + verb + "しました", !is_me(i), is_me(i)});
+    }
+    return out;
+}
 
 // 種類は「基本.詳細」でもよい（例: alert.temp、care.break）。色は基本で、アイコンは詳細で決める。
 // VRChat 以外の通知（frame-care など）: alert / urgent = 赤、warn = 琥珀、care / info = 青緑
@@ -257,7 +331,27 @@ static cairo_surface_t* render_toast_surface(const Toast& t, const std::string& 
     cairo_set_source_rgba(cr, r, g, b, 0.95);
     cairo_fill(cr);
     draw::text(cr, font, kind_icon(t.kind), "Bold", 34, 76, kH / 2.0, 0, {0.08, 0.09, 0.11}, draw::Center);
-    draw::text(cr, font, t.title, "Bold", 26, 142, 50, kW - 170, {1, 1, 1});
+    if (t.fr || t.me) {
+        const draw::Rgb nc = t.me ? draw::kSelf : draw::kFriend;
+        std::string name, rest;
+        split_summary(t.title, name, rest);
+        int maxw = kW - 170;
+        if (!rest.empty()) {
+            // 「さんほか N 人」は白のまま、名前だけ黄色。名前が長すぎるときは名前の側を省略する
+            cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+            cairo_t* m = cairo_create(tmp);
+            int rw = draw::text(m, font, rest, "Bold", 26, 0, 0, 0, {1, 1, 1});
+            int nw = draw::text(m, font, name, "Bold", 26, 0, 0, 0, {1, 1, 1});
+            cairo_destroy(m); cairo_surface_destroy(tmp);
+            int namew = std::min(nw + 1, std::max(60, maxw - rw));
+            int drawn = draw::text(cr, font, name, "Bold", 26, 142, 50, namew, nc);
+            draw::text(cr, font, rest, "Bold", 26, 142 + std::min(drawn, namew), 50, maxw - std::min(drawn, namew), {1, 1, 1});
+        } else {
+            draw::text(cr, font, name, "Bold", 26, 142, 50, maxw, nc);
+        }
+    } else {
+        draw::text(cr, font, t.title, "Bold", 26, 142, 50, kW - 170, {1, 1, 1});
+    }
     draw::text(cr, font, t.text, "Regular", 22, 142, 104, kW - 170, {0.82, 0.84, 0.88});
     cairo_destroy(cr);
     return s;
@@ -471,6 +565,73 @@ static int self_test() {
         check(clean_wid("wrld_00000000-0000-0000-0000-0000000000a1") != "" && clean_wid("wrld_x:1~private(usr_1)") == "" &&
                   clean_wid("usr_1") == "",
               "ワールド ID だけ受け付ける（インスタンスや人の ID は捨てる）");
+        // フレンド（0.4.0）: f は書いて読み戻せる、無い行は false、あとからフレンドとわかったら書き足す
+        HistEvent fe{"2026-01-02 21:30:00", "join", "Friend", "ワールド", "fr1", "", true}, fb;
+        check(hist::from_json(hist::to_json(fe), fb) && fb.fr && hist::to_json(e).find("\"f\"") == std::string::npos,
+              "フレンドの印を書いて読み戻せる（フレンドでなければ書かない）");
+        HistEvent nf = fe; nf.fr = false; nf.key = "fr2";
+        check(h3.add(nf) && !h3.events().back().fr, "フレンドでない記録");
+        nf.fr = true;
+        check(h3.add(nf) && h3.events().back().fr && !h3.add(nf), "あとからフレンドとわかったら 1 回だけ書き足す");
+        History h5(dir + "/old");
+        h5.load();
+        check(h5.events().back().fr, "フレンドの印が読み直しても残る");
+        nf.fr = false;
+        check(!h5.add(nf) && h5.events().back().fr, "フレンドの印は消えない（古い Windows 側が印なしで送り直しても）");
+        std::string sn, sr;
+        split_summary("Mint さんほか 4 人", sn, sr);
+        check(sn == "Mint" && sr == " さんほか 4 人", "まとめカードの名前を取り出す");
+        split_summary("Alice", sn, sr);
+        check(sn == "Alice" && sr.empty(), "まとめでないカードは名前だけ");
+        // 通知する人（0.4.1）
+        Toast j1{"join", "Pal", "が参加しました", true}, j2{"join", "Who", "が参加しました", false};
+        Toast grp{"join", "Ann さんほか 4 人", "が参加", false}, inv{"invite", "Who", "から招待", false}, care{"care.break", "休憩", "x", false};
+        check(filter_people(j2, "all", true, {}).size() == 1 && filter_people(inv, "friends", true, {}).size() == 1 &&
+                  filter_people(care, "friends", true, {}).size() == 1,
+              "全員なら全部、フレンドのみでも参加・退出以外は出す");
+        check(filter_people(j1, "off", true, {"Pal"}).empty() && filter_people(Toast{"leave", "Pal", "", true}, "off", true, {"Pal"}).empty() &&
+                  filter_people(inv, "off", true, {}).empty() && filter_people(care, "off", true, {}).empty() &&
+                  filter_people(Toast{"world", "W", "ワールドに入りました"}, "off", true, {}).empty(),
+              "オフならどの通知も出さない");
+        check(filter_people(j1, "friends", true, {"Pal"}).size() == 1 && filter_people(j2, "friends", true, {}).empty(),
+              "フレンドのみ: 1 人のカード");
+        auto g1 = filter_people(grp, "friends", true, {"Buddy"});
+        auto g2 = filter_people(grp, "friends", true, {"Buddy", "Mint"});
+        auto g3 = filter_people(grp, "friends", true, {"Buddy", "Mint", "Kai"});
+        check(filter_people(grp, "friends", true, {}).empty() && g1.size() == 1 && g1[0].title == "Buddy" && g1[0].fr &&
+                  g1[0].text == "が参加しました" && g2.size() == 2 && g3.size() == 1 && g3[0].title == "Buddy さんほか 2 人" &&
+                  g3[0].text == "が参加",
+              "フレンドのみ: まとめカードはフレンドだけで数えなおす");
+        check(filter_people(j1, "friends", false, {}).size() == 1 && filter_people(Toast{"join", "Pal さんほか 3 人", "が参加", true}, "friends", false, {}).empty(),
+              "フレンドのみ: 0.4.0 の Windows 側は 1 人のカードだけ");
+        Toast mine{"join", "Me", "が参加しました", false, true};
+        auto s1 = filter_people(mine, "friends", true, {}, "Me");
+        auto s3 = filter_people(grp, "friends", true, {"Buddy", "Mint"}, "Me");
+        check(s1.size() == 1 && s1[0].me && !s1[0].fr && filter_people(mine, "all", true, {}, "Me").size() == 1 &&
+                  filter_people(mine, "off", true, {}, "Me").empty() && s3.size() == 1 && s3[0].title == "Me さんほか 2 人" && s3[0].me,
+              "自分は全員・フレンドのみで出て、まとめでは先頭（オフなら出ない）");
+        HistEvent me{"2026-01-02 21:40:00", "join", "Me", "ワールド", "me1", "", false, true}, mb;
+        check(hist::from_json(hist::to_json(me), mb) && mb.me && !mb.fr, "自分の印を書いて読み戻せる");
+        std::string cfgp = dir + "/cfg/sub/config.ini";
+        check(save_config_value(cfgp, "notify_people", "friends"), "設定ファイルが無くても作って書く");
+        {
+            std::ofstream f(cfgp);
+            f << "# コメント\nanchor = left_wrist\nnotify_people = all\n";
+        }
+        Config cc;
+        check(save_config_value(cfgp, "notify_people", "off") && load_config(cfgp, cc) && cc.notify_people == "off" &&
+                  cc.anchor == "left_wrist",
+              "設定の 1 項目だけ書き換えて、ほかは残す");
+        {
+            std::ifstream f(cfgp);
+            std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            check(all.find("# コメント") == 0 && all.find("notify_people = off") != std::string::npos &&
+                      all.find("notify_people = all") == std::string::npos,
+                  "コメントも残り、同じ項目は 1 つだけ");
+        }
+        check(HistoryPanel::notify_from(HistoryPanel::notify_name(HistoryPanel::NotifyFriends)) == HistoryPanel::NotifyFriends &&
+                  HistoryPanel::notify_from("???") == HistoryPanel::NotifyAll,
+              "通知する人の名前と値の行き来");
         printf("（テスト用の一時ファイル: %s。消していません）\n", dir.c_str());
     }
     printf("%s\n", fails ? "自己テスト失敗" : "自己テスト OK");
@@ -504,6 +665,8 @@ int main(int argc, char** argv) {
     std::string config_path = default_config_path(), dump_png, dump_history, dump_thumb, history_dir_opt,
                 title = "テスト", text = "wrist-toast の表示テスト", kind = "test", filter = "all", watcher_opt = "off", vrc_log_opt;
     double scroll_px = 0;
+    bool friend_opt = false, self_opt = false;
+    std::string notify_opt, friends_state_opt;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -522,14 +685,19 @@ int main(int argc, char** argv) {
         else if (a == "--title") title = next();
         else if (a == "--text") text = next();
         else if (a == "--kind") kind = next();
+        else if (a == "--friend") friend_opt = true;
+        else if (a == "--self") self_opt = true;
+        else if (a == "--notify") notify_opt = next();
+        else if (a == "--friends-state") friends_state_opt = next();
         else {
             fprintf(stderr,
                     "使い方: wrist-toast [--config FILE]\n"
                     "  --self-test                 自己テスト\n"
                     "  --probe                     動いている wrist-toast のパネルが SteamVR にあるか確かめる\n"
-                    "  --dump-png OUT [--kind K --title T --text S]   通知のカードを PNG に\n"
+                    "  --dump-png OUT [--kind K --title T --text S --friend|--self]   通知のカードを PNG に（名前をフレンドの黄色 / 自分の水色で）\n"
                     "  --dump-history-png OUT [--history-dir D] [--filter all|join|leave] [--scroll PX]   履歴のパネルを PNG に\n"
                     "      [--watcher on|old|off --vrc-log full|errors|unknown|nolog]   履歴が無いときの表示の確認用\n"
+                    "      [--notify all|friends|off --friends-state ok|nokey|bad|none|off]   「通知」の帯の確認用\n"
                     "  --dump-thumbnail-png OUT    ダッシュボードのアイコンを PNG に\n"
                     "  --version\n");
             return 2;
@@ -540,9 +708,10 @@ int main(int argc, char** argv) {
     std::string history_dir = !history_dir_opt.empty() ? history_dir_opt : !c.history_dir.empty() ? c.history_dir : default_history_dir();
 
     // SteamVR なしで、見た目を PNG に書き出す
-    if (!dump_png.empty()) return write_png(render_toast_surface({kind, title, text}, c.font), dump_png) ? 0 : 1;
+    if (!dump_png.empty()) return write_png(render_toast_surface({kind, title, text, friend_opt, self_opt}, c.font), dump_png) ? 0 : 1;
     if (!dump_history.empty() || !dump_thumb.empty()) {
         HistoryPanel panel(c.font);
+        panel.set_notify(HistoryPanel::notify_from(notify_opt.empty() ? c.notify_people : notify_opt));
         cairo_surface_t* s = nullptr;
         if (!dump_thumb.empty()) {
             panel.render_thumbnail(&s);
@@ -555,6 +724,7 @@ int main(int argc, char** argv) {
             WatchStatus st;
             st.watcher = watcher_opt == "on" ? WatchStatus::On : watcher_opt == "old" ? WatchStatus::Old : WatchStatus::Off;
             st.log = vrc_log_opt;
+            st.friends = friends_state_opt;
             panel.set_status(st);
             panel.render(h.events());   // 中身の高さを決める
             panel.scroll(-scroll_px / 120.0);
@@ -584,6 +754,7 @@ int main(int argc, char** argv) {
 
     Vr v;
     HistoryPanel panel(c.font);
+    panel.set_notify(HistoryPanel::notify_from(c.notify_people));
     std::deque<Toast> queue;
     bool showing = false, panel_dirty = true, thumb_done = false, panel_visible = false;
     unsigned panel_version = ~0u;
@@ -593,7 +764,7 @@ int main(int argc, char** argv) {
     std::string current_world, current_wid;
     // Windows 側の見張り: /wrist/heartbeat（0.3.0 から 30 秒ごと）か、ほかのパケットがいつ来たか
     double beat_at = -1e9, packet_at = -1e9;
-    std::string beat_version, beat_log;
+    std::string beat_version, beat_log, beat_friends;
     const double kAlive = 90;
 
     while (!g_stop) {
@@ -618,6 +789,11 @@ int main(int argc, char** argv) {
                             break;
                         case vr::VREvent_MouseButtonUp:
                             if (ev.data.mouse.button == vr::VRMouseButton_Left) panel_dirty |= panel.pointer_up(x, y);
+                            if (panel.take_notify_change()) {
+                                c.notify_people = HistoryPanel::notify_name(panel.notify());
+                                bool ok = save_config_value(config_path, "notify_people", c.notify_people);
+                                logf("通知する人を %s にしました（%s）", c.notify_people.c_str(), ok ? config_path.c_str() : "設定ファイルに書けませんでした");
+                            }
                             break;
                         case vr::VREvent_FocusLeave: panel_dirty |= panel.pointer_leave(); break;
                         case vr::VREvent_ScrollSmooth:
@@ -653,7 +829,7 @@ int main(int argc, char** argv) {
 
         {
             WatchStatus st;
-            if (now - beat_at < kAlive) { st.watcher = WatchStatus::On; st.version = beat_version; st.log = beat_log; }
+            if (now - beat_at < kAlive) { st.watcher = WatchStatus::On; st.version = beat_version; st.log = beat_log; st.friends = beat_friends; }
             else if (now - packet_at < kAlive) st.watcher = WatchStatus::Old;
             panel_dirty |= panel.set_status(st);
         }
@@ -684,9 +860,11 @@ int main(int argc, char** argv) {
             } else if (m.address == "/wrist/heartbeat") {
                 // Windows 側の見張りが動いている知らせ: 版、VRChat のログ出力の状態
                 std::string ver = clean(m.strings[0], 24), lg = m.strings.size() >= 2 ? clean(m.strings[1], 16) : "";
-                if (now - beat_at >= kAlive || ver != beat_version || lg != beat_log)
-                    logf("Windows 側の見張り %s（%s）: %s、VRChat のログ出力 %s", ver.c_str(), ipstr,
-                         now - beat_at >= kAlive ? "つながりました" : "様子が変わりました", lg.c_str());
+                std::string fs = m.strings.size() >= 3 ? clean(m.strings[2], 16) : "";   // 3 個目: フレンド一覧（0.4.1 から）
+                if (now - beat_at >= kAlive || ver != beat_version || lg != beat_log || fs != beat_friends)
+                    logf("Windows 側の見張り %s（%s）: %s、VRChat のログ出力 %s、フレンド一覧 %s", ver.c_str(), ipstr,
+                         now - beat_at >= kAlive ? "つながりました" : "様子が変わりました", lg.c_str(), fs.empty() ? "?" : fs.c_str());
+                beat_friends = fs;
                 beat_at = packet_at = now;
                 beat_version = ver;
                 beat_log = lg;
@@ -695,6 +873,8 @@ int main(int argc, char** argv) {
                 // 過去の分（Windows 側が起動時に VRChat のログから読み直したもの）。通知は出さない。6 個目はワールド ID（0.3.0 から）
                 HistEvent e{clean(m.strings[0], 19), clean(m.strings[1], 24), clean(m.strings[2], 120), clean(m.strings[3], 120),
                             clean(m.strings[4], 200), m.strings.size() >= 6 ? clean_wid(m.strings[5]) : ""};
+                e.fr = m.strings.size() >= 7 && m.strings[6] == "1";   // 7 個目: フレンド（0.4.0 から）、"self" なら自分（0.4.1 から）
+                e.me = m.strings.size() >= 7 && m.strings[6] == "self";
                 if (history.add(e)) hist_added++;
             } else if (m.address == "/wrist/notify") {
                 received++;
@@ -712,19 +892,41 @@ int main(int argc, char** argv) {
                 std::string key = m.strings.size() >= 6 ? clean(m.strings[5], 200) : "";
                 bool quiet = m.strings.size() >= 7 && m.strings[6] == "quiet";
                 std::string wid = m.strings.size() >= 8 ? clean_wid(m.strings[7]) : "";   // 8 個目: ワールド ID（0.3.0 から）
+                t.fr = m.strings.size() >= 9 && m.strings[8] == "1";   // 9 個目: 先頭の名前がフレンド（0.4.0 から）、"self" なら自分（0.4.1 から）
+                t.me = m.strings.size() >= 9 && m.strings[8] == "self";
+                std::string self_name = m.strings.size() >= 11 ? clean(m.strings[10], 120) : "";   // 11 個目: このカードの自分の名前
+                // 10 個目: このカードに入っているフレンドの名前（タブ区切り、0.4.1 から）
+                bool has_names = m.strings.size() >= 10;
+                std::vector<std::string> fnames;
+                if (has_names) {
+                    std::string all = m.strings[9];
+                    size_t a = 0;
+                    while (a <= all.size()) {
+                        size_t b = all.find('\t', a);
+                        if (b == std::string::npos) b = all.size();
+                        std::string one = clean(all.substr(a, b - a), 120);
+                        if (!one.empty()) fnames.push_back(one);
+                        a = b + 1;
+                    }
+                }
                 if (t.kind == "world") { current_world = t.title; current_wid = wid; }
                 else if (world.empty()) { world = current_world; if (wid.empty()) wid = current_wid; }
                 if (t.kind == "world") world = t.title;
                 // 履歴に残すのは、時刻の付いた VRChat の出来事だけ（-Test や古い Windows 側の通知は残さない）
-                if (!ts.empty() && history.add({ts, t.kind, t.title, world, key, wid})) hist_added++;
+                if (!ts.empty() && history.add({ts, t.kind, t.title, world, key, wid, t.fr, t.me})) hist_added++;
                 if (quiet) continue;
-                if (now - window_start > 1.0) { window_start = now; window_count = 0; }
-                if (++window_count > 10 || int(queue.size()) >= c.max_queue) {
-                    dropped++;
-                    logf("多すぎるので捨てました: [%s] %s", t.kind.c_str(), t.title.c_str());
-                } else {
-                    logf("受信 %s: [%s] %s / %s", ipstr, t.kind.c_str(), t.title.c_str(), t.text.c_str());
-                    queue.push_back(t);
+                std::vector<Toast> shown_now = filter_people(t, c.notify_people, has_names, fnames, self_name);
+                if (shown_now.empty()) logf("受信 %s: [%s] %s（通知する人: %s なので出しません）", ipstr, t.kind.c_str(), t.title.c_str(),
+                                            c.notify_people.c_str());
+                for (auto& one : shown_now) {
+                    if (now - window_start > 1.0) { window_start = now; window_count = 0; }
+                    if (++window_count > 10 || int(queue.size()) >= c.max_queue) {
+                        dropped++;
+                        logf("多すぎるので捨てました: [%s] %s", one.kind.c_str(), one.title.c_str());
+                    } else {
+                        logf("受信 %s: [%s] %s / %s", ipstr, one.kind.c_str(), one.title.c_str(), one.text.c_str());
+                        queue.push_back(one);
+                    }
                 }
             } else {
                 logf("%s から知らないアドレス %s を受け取ったので捨てました", ipstr, m.address.c_str());

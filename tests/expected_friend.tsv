@@ -1,0 +1,6 @@
+world	World F	ワールドに入りました
+join	Pal	が参加しました	friend
+join	Stranger	が参加しました
+join	Buddy さんほか 3 人	が参加	friend
+join	Me さんほか 3 人	が参加	self
+leave	Pal	が退出しました	friend

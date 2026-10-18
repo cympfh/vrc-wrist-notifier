@@ -44,6 +44,24 @@ for ($i = 0; $i -lt $n4; $i++) {
     else { Write-Host "FAIL want: $($want4[$i])"; Write-Host "     got : $($got4[$i])"; $fail++ }
 }
 $n += $n4
+# フレンド（0.4.0）: friends.json の人は印が付き、まとめカードの先頭にはフレンドが来る。テストでは API を呼ばない
+$ftmp = Join-Path $tmp "friend"
+New-Item -ItemType Directory -Force -Path $ftmp | Out-Null
+Copy-Item -LiteralPath (Join-Path $here "sample_friend_log.txt") -Destination (Join-Path $ftmp "output_log_2026-01-06_20-00-00.txt")
+$fcfg = Join-Path $ftmp "config.json"
+[IO.File]::WriteAllText($fcfg, (@{ log_dir = $ftmp; friends_file = (Join-Path $here "sample_friends.json") } | ConvertTo-Json),
+    (New-Object System.Text.UTF8Encoding $false))
+foreach ($t in @("expected_friend.tsv", "expected_friend_history.tsv")) {
+    if ($t -eq "expected_friend.tsv") { $got5 = @(& $script -Config $fcfg -Replay (Join-Path $here "sample_friend_log.txt") -DryRun) }
+    else { $got5 = @(& $script -Config $fcfg -Backfill -DryRun) }
+    $want5 = @(Get-Content -LiteralPath (Join-Path $here $t) -Encoding UTF8)
+    $n5 = [Math]::Max($got5.Count, $want5.Count)
+    for ($i = 0; $i -lt $n5; $i++) {
+        if ($got5[$i] -ceq $want5[$i]) { Write-Host "OK   $($want5[$i])" }
+        else { Write-Host "FAIL want: $($want5[$i])"; Write-Host "     got : $($got5[$i])"; $fail++ }
+    }
+    $n += $n5
+}
 Write-Host "（一時フォルダ $tmp は消していません）"
 $n += $n2 + 1
 if ($fail) { Write-Host "$fail 件失敗"; exit 1 } else { Write-Host "全 $n 件 OK"; exit 0 }

@@ -33,6 +33,29 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - Frame 側は 90 秒以内に heartbeat が来ていれば「見張りが動いている」とし、履歴がまだ無いときのパネルに、見張りとデバッグログ（Full）のそれぞれが済んでいるか、済んでいなければ何をすればよいかを出します。heartbeat が無く時刻付きの通知だけが来るときは 0.3.0 より前の Windows 側とみなします
 - `--dump-history-png out.png --history-dir 空のフォルダ --watcher on|old|off --vrc-log full|errors|unknown|nolog` で、その表示を PNG にできます
 
+## フレンドの名前を黄色に（0.4.0）
+
+- Windows 側は VRChat のフレンド一覧（`usr_…` の ID だけ）を `%LOCALAPPDATA%\vrc-wrist-notifier\friends.json`（`fetched_at`、`count`、`ids`）に置きます。キーは書きません
+- 取り直すのは friends.json が `friends_refresh_minutes`（既定 60）分より古くなったときだけ（失敗したときも 1 時間はあける）。`GET https://api.vrchat.cloud/api/1/auth/user` を 1 回呼んで `friends` を使います（User-Agent `vrc-wrist-notifier/版 cympfh`）。取り直しは別の runspace で行うので、通知は止まりません
+- キー（`auth` クッキーの値）は、Windows の環境変数 `VRCHAT_AUTH_KEY`（プロセス → ユーザー）、無ければ `wsl.exe -d <wsl_distro> --exec zsh -lic` で読みます。取り直すときだけ読み、表示・ログ・保存はしません。キーが無い・401 なら、起動しなおすまで自分からは取り直さず、今までどおり動きます
+- `/wrist/notify` の 9 個目、`/wrist/history` の 7 個目が `"1"` ならフレンド。まとめカードでは先頭にフレンドを出し、「名前 さんほか N 人」の名前の部分だけ黄色にします
+- 一覧に無い人が、次に取り直したあとでフレンドだとわかったら、同じ鍵で `/wrist/history` を送り直し、Frame 側で印を書き足します。履歴の 1 行には `"f":"1"` が付きます（フレンドでなければ書かない）。印は消えません
+- `-RefreshFriends` で今すぐ取り直して件数だけ表示。`--dump-png … --friend`（`--self`）でフレンド（自分）のカードを PNG にできます
+
+## 通知する人（0.4.1）
+
+- パネルの「通知設定」の帯で `全員` / `フレンドのみ` / `オフ` を選びます。Frame の `config.ini` の `notify_people`（`all` / `friends` / `off`）に書き、次の起動でも使います（その 1 行だけ書き換え、ほかの行とコメントは残す）
+- 「フレンドのみ」が効くのは参加・退出のカードだけで、ワールド、招待、`alert` / `warn` / `care` などはそのまま出ます。「オフ」ではどの通知も出しません（0.4.3 から）。履歴にはどれでも全員残ります
+- `/wrist/notify` の 10 個目に、そのカードに入っているフレンドの名前（タブ区切り）が付きます。「フレンドのみ」では、まとめカードもフレンドだけで数えなおします（2 人までは 1 人ずつ、3 人以上は「名前 さんほか N 人」）。10 個目が無い 0.4.0 の Windows 側からは 1 人のカードだけ判断します
+- `/wrist/heartbeat` の 3 個目がフレンド一覧の状態（`ok` / `nokey` / `bad` / `none` / `off`）。「フレンドのみ」でフレンドがわからないときは、帯の右に短い注意を出します
+- `--dump-history-png … --notify friends --friends-state nokey` で帯の見た目を PNG にできます
+
+## 自分の名前は水色（0.4.1）
+
+- 自分の ID は VRChat のログの `[Behaviour] User Authenticated: 名前 (usr_…)` の行から取ります（API は使いません）。フレンド一覧を取ったときの `/auth/user` の `id` も friends.json の `self_id` に残し、ログに無いときに使います
+- `/wrist/notify` の 9 個目と `/wrist/history` の 7 個目が `"self"` なら自分。`/wrist/notify` の 11 個目はそのカードに入っている自分の名前。履歴の 1 行には `"s":"1"`
+- 自分は「全員」「フレンドのみ」のどちらでも通知し（「オフ」なら出さない）、まとめカードでは先頭に出します
+
 ## 拾うログの行
 
 VRChat のログ出力を Full にすると出る行です（形式は [VRCX](https://github.com/vrcx-team/VRCX) の LogWatcher と同じ）。
@@ -65,8 +88,9 @@ Frame `~/.config/vrc-wrist-notifier/config.ini`
 | history_panel | true | ダッシュボードに履歴のパネルを出す |
 | panel_width_m | 2.6 | パネルの幅（メートル） |
 | history_dir | （空） | 履歴の場所。空なら `~/.local/state/vrc-wrist-notifier` |
+| notify_people | all | 通知設定（`all` / `friends`: 参加・退出はフレンドと自分だけ / `off`: どの通知も出さない）。パネルで選ぶと書き換わる |
 
-Windows `%APPDATA%\vrc-wrist-notifier\config.json`: `frame_host`, `frame_port`, `log_dir`（空なら既定の場所）, `quiet_seconds`, `notify_join` / `notify_leave` / `notify_world` / `notify_invite` / `notify_friend` / `notify_other`、`backfill_history`（起動時に過去のログから履歴を送る、既定 true）。
+Windows `%APPDATA%\vrc-wrist-notifier\config.json`: `frame_host`, `frame_port`, `log_dir`（空なら既定の場所）, `quiet_seconds`, `notify_join` / `notify_leave` / `notify_world` / `notify_invite` / `notify_friend` / `notify_other`、`backfill_history`（起動時に過去のログから履歴を送る、既定 true）、`friends` / `friends_refresh_minutes` / `friends_file` / `wsl_distro`（フレンド、上を参照）。
 
 ## テスト
 

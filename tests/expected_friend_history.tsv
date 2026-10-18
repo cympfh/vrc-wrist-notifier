@@ -1,0 +1,12 @@
+history	2026-01-06 20:00:00	world	World F	World F	
+history	2026-01-06 20:00:20	join	Pal	World F		friend
+history	2026-01-06 20:01:00	join	Stranger	World F	
+history	2026-01-06 20:02:00	join	Ann	World F	
+history	2026-01-06 20:02:01	join	Bob	World F	
+history	2026-01-06 20:02:02	join	Buddy	World F		friend
+history	2026-01-06 20:02:03	join	Cat	World F	
+history	2026-01-06 20:03:00	join	Dan	World F	
+history	2026-01-06 20:03:01	join	Eve	World F	
+history	2026-01-06 20:03:02	join	Me	World F		self
+history	2026-01-06 20:03:03	join	Fay	World F	
+history	2026-01-06 20:04:00	leave	Pal	World F		friend

@@ -9,6 +9,7 @@
 #   ... -Backfill [-DryRun]                                                    # 過去のログから履歴だけ送って終わる
 #   ... -ShowWorld                                                             # いちばん新しいログから、今いるワールドを表示するだけ
 #   ... -Status                                                                # VRChat のログ出力が Full になっているかを表示するだけ
+#   ... -RefreshFriends                                                        # VRChat のフレンド一覧を今すぐ取り直して、件数だけ表示
 [CmdletBinding()]
 param(
     [string]$Config = "",
@@ -17,10 +18,11 @@ param(
     [switch]$Backfill,
     [switch]$ShowWorld,
     [switch]$Status,
+    [switch]$RefreshFriends,
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
-$Version = "0.3.1"
+$Version = "0.4.1"
 
 # ---------------------------------------------------------------- 設定
 $defaults = [ordered]@{
@@ -36,6 +38,10 @@ $defaults = [ordered]@{
     notify_friend = $true     # friendRequest
     notify_other  = $false    # それ以外の通知
     backfill_history = $true  # 起動したとき、今ある VRChat のログから参加・退出の履歴を Frame に送る（重複は Frame 側で除く）
+    friends       = $true     # フレンドの名前を黄色に（VRCHAT_AUTH_KEY があるときだけ。無ければ何もしない）
+    friends_refresh_minutes = 60   # friends.json がこれより古くなったら取り直す（分）
+    friends_file  = ""        # 空なら %LOCALAPPDATA%\vrc-wrist-notifier\friends.json（人の ID と取った時刻だけ。キーは書かない）
+    wsl_distro    = "Ubuntu"  # Windows の環境変数に VRCHAT_AUTH_KEY が無いとき、この WSL の zsh から読む
 }
 if (-not $Config) { $Config = Join-Path $env:APPDATA "vrc-wrist-notifier\config.json" }
 $cfg = @{}
@@ -48,6 +54,7 @@ if (Test-Path -LiteralPath $Config) {
     }
 }
 if (-not $cfg.log_dir) { $cfg.log_dir = Join-Path ($env:LOCALAPPDATA + "Low") "VRChat\VRChat" }
+if (-not $cfg.friends_file) { $cfg.friends_file = Join-Path $env:LOCALAPPDATA "vrc-wrist-notifier\friends.json" }
 
 function Log([string]$msg) { Write-Host ("{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $msg) }
 
@@ -92,14 +99,183 @@ function Get-HistKey([string]$ts, [string]$kind, [string]$name) { "$ts|$kind|$na
 
 # 通知を送る。$ts（yyyy-MM-dd HH:mm:ss）と $world を付けると Frame 側の履歴にも残る。$quiet なら履歴だけ
 # 8 個目はワールドの ID（0.3.0 から。古い Frame 側は 7 個目までしか読まないので、付けても困らない）
-function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = "", [string]$world = "", [switch]$quiet, [string]$worldId = "") {
-    if ($DryRun) { if (-not $quiet) { Write-Output ("{0}`t{1}`t{2}" -f $kind, $title, $text) }; return }
+# 9 個目は先頭の名前がフレンドなら "1"（0.4.0 から）、10 個目はそのカードに入っているフレンドの名前をタブ区切りで（0.4.1 から。
+# Frame 側の「フレンドのみ」で数えなおすのに使う）。古い Frame 側は読まない
+# 9 個目が "self" なら先頭の名前は自分、11 個目はそのカードに入っている自分の名前（0.4.1 から）
+function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = "", [string]$world = "", [switch]$quiet, [string]$worldId = "", [switch]$friend, [string[]]$friendNames = @(), [switch]$self, [string]$selfName = "") {
+    if ($DryRun) { if (-not $quiet) { $f = ""; if ($self) { $f = "`tself" } elseif ($friend) { $f = "`tfriend" }; Write-Output ("{0}`t{1}`t{2}{3}" -f $kind, $title, $text, $f) }; return }
     $key = ""
     if ($ts) { $key = Get-HistKey $ts $kind $title }
     $q = ""
     if ($quiet) { $q = "quiet" }
-    Send-Osc "/wrist/notify" @($kind, $title, $text, $ts, $world, $key, $q, $worldId)
+    $fr = ""
+    if ($self) { $fr = "self" } elseif ($friend) { $fr = "1" }
+    Send-Osc "/wrist/notify" @($kind, $title, $text, $ts, $world, $key, $q, $worldId, $fr, ($friendNames -join "`t"), $selfName)
     if ($quiet) { Log "履歴だけ送信: [$kind] $title" } else { Log "送信: [$kind] $title / $text" }
+}
+
+# ---------------------------------------------------------------- フレンド（0.4.0）
+# VRChat のフレンド一覧（人の ID だけ）を friends.json に置いておき、参加・退出した人がフレンドかを見る。
+# friends.json が friends_refresh_minutes 分（既定 60）より古くなったときだけ取り直す（失敗したときも 1 時間はあける）。
+# 取り直しは裏（別の runspace）でやるので、通知は止まらない。キーは使うときだけ読み、表示も保存もしない。
+$script:friendIds = New-Object 'System.Collections.Generic.HashSet[string]'
+$script:friendsAt = [datetime]::MinValue     # friends.json を取った時刻
+$script:friendsTry = [datetime]::MinValue    # 最後に取り直そうとした時刻
+$script:friendsJob = $null
+$script:friendsKeyBad = $false               # キーが無い・効かない（次に起動しなおすまで、自分からは取り直さない）
+$script:friendsState = "none"                # Frame 側に知らせる: ok / nokey / bad / none / off
+$script:unknownJoins = New-Object System.Collections.Generic.List[object]   # 取り直したあとで、フレンドだったら履歴に印を付け直す
+
+function Load-Friends {
+    if (-not $cfg.friends -or -not (Test-Path -LiteralPath $cfg.friends_file)) { return }
+    try {
+        $j = Get-Content -LiteralPath $cfg.friends_file -Raw -Encoding UTF8 | ConvertFrom-Json
+        $script:friendIds.Clear()
+        foreach ($id in @($j.ids)) { if ([string]$id -like "usr_*") { [void]$script:friendIds.Add([string]$id) } }
+        if (-not $script:selfId -and [string]$j.self_id -like "usr_*") { $script:selfId = [string]$j.self_id }
+        $script:friendsAt = [datetime]::Parse([string]$j.fetched_at, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime()
+    } catch { Log "friends.json を読めませんでした（取り直します）: $($_.Exception.Message)" }
+}
+
+function Save-Friends([string[]]$ids, [string]$selfId = "") {
+    $dir = Split-Path -Parent $cfg.friends_file
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $obj = [ordered]@{ fetched_at = (Get-Date).ToUniversalTime().ToString("o"); count = $ids.Count; self_id = $selfId; ids = @($ids) }
+    $tmp = $cfg.friends_file + ".tmp"
+    [IO.File]::WriteAllText($tmp, ($obj | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
+    Move-Item -LiteralPath $tmp -Destination $cfg.friends_file -Force
+}
+
+function Test-Friend([string]$uid) { $uid -and $script:friendIds.Contains($uid) }
+
+# 自分の ID: VRChat のログの「User Authenticated」の行（API は要らない）か、フレンド一覧を取ったときの /auth/user の id
+$script:selfId = ""
+$reAuth = [regex]'^\[Behaviour\] User Authenticated: (.+?) \((usr_[0-9a-fA-F-]+)\)'
+function Test-Self([string]$uid) { $uid -and $uid -eq $script:selfId }
+function Update-Self([string]$body) {
+    if ($body.IndexOf("User Authenticated: ", [StringComparison]::Ordinal) -lt 0) { return }
+    $a = $reAuth.Match($body)
+    if ($a.Success) { $script:selfId = $a.Groups[2].Value }
+}
+
+# 裏で動かす処理: キーを読む（Windows の環境変数 → WSL の zsh）→ GET /api/1/auth/user → friends の ID だけ返す。
+# 返すもの: @{ ok; ids; code; where }。キーそのものは返さない
+$script:friendsWorker = {
+    param([string]$distro, [string]$ua)
+    $r = @{ ok = $false; ids = @(); code = ""; where = ""; self = "" }
+    $key = [Environment]::GetEnvironmentVariable("VRCHAT_AUTH_KEY", "Process")
+    if (-not $key) { $key = [Environment]::GetEnvironmentVariable("VRCHAT_AUTH_KEY", "User") }
+    if ($key) { $r.where = "windows" }
+    elseif ($distro -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+        # 対話ログインシェルの zsh で読む（~/.zshrc で設定している場合）。出力は印の付いた行だけ使う
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "wsl.exe"
+        $psi.Arguments = "-d $distro --exec zsh -lic `"print -r -- __VWN_KEY__`$VRCHAT_AUTH_KEY`""
+        $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $psi.RedirectStandardInput = $true; $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $p.StandardInput.Close()
+        $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit(90000)) { try { $p.Kill() } catch {}; $r.code = "wsl-timeout"; return $r }
+        foreach ($l in ($outTask.Result -split "`r?`n")) {
+            $i = $l.IndexOf("__VWN_KEY__")
+            if ($i -ge 0) { $key = $l.Substring($i + 11).Trim() }
+        }
+        $outTask = $null
+        if ($key) { $r.where = "wsl" }
+    }
+    if (-not $key) { $r.code = "nokey"; return $r }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $req = [System.Net.HttpWebRequest]::Create("https://api.vrchat.cloud/api/1/auth/user")
+        $req.Method = "GET"; $req.UserAgent = $ua; $req.Timeout = 30000; $req.Accept = "application/json"
+        $req.Headers.Add("Cookie", "auth=$key")
+        $key = $null
+        $resp = $req.GetResponse()
+        $sr = New-Object System.IO.StreamReader($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+        $body = $sr.ReadToEnd(); $sr.Dispose(); $resp.Dispose()
+        $u = $body | ConvertFrom-Json
+        if ($null -eq $u.friends) { $r.code = "nofriends"; return $r }   # 2 段階認証の途中など
+        $r.ids = @($u.friends | Where-Object { [string]$_ -like "usr_*" } | ForEach-Object { [string]$_ })
+        if ([string]$u.id -like "usr_*") { $r.self = [string]$u.id }
+        $r.ok = $true; $r.code = "200"
+    } catch [System.Net.WebException] {
+        $resp = $_.Exception.Response
+        if ($resp) { $r.code = [string][int]$resp.StatusCode } else { $r.code = "net" }
+    } catch { $r.code = "error" }
+    $key = $null
+    return $r
+}
+
+# 取り直しを裏で始める（もう動いていれば何もしない）
+function Start-FriendsRefresh([string]$why) {
+    if (-not $cfg.friends -or $script:friendsJob -or $DryRun -or $Replay) { return }
+    $script:friendsTry = Get-Date
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript($script:friendsWorker.ToString()).AddArgument([string]$cfg.wsl_distro).AddArgument("vrc-wrist-notifier/$Version cympfh")
+    $script:friendsJob = @{ ps = $ps; handle = $ps.BeginInvoke(); why = $why }
+    Log "フレンド一覧を取り直しています（$why）"
+}
+
+# 裏の取り直しが終わっていたら受け取る
+function Poll-FriendsRefresh {
+    $j = $script:friendsJob
+    if (-not $j -or -not $j.handle.IsCompleted) { return }
+    $script:friendsJob = $null
+    $r = $null
+    try { $r = @($j.ps.EndInvoke($j.handle))[0] } catch { $r = @{ ok = $false; code = "error" } } finally { $j.ps.Dispose() }
+    if ($r -and $r.ok) {
+        $script:friendIds.Clear()
+        foreach ($id in $r.ids) { [void]$script:friendIds.Add($id) }
+        $script:friendsAt = Get-Date
+        if ($r.self -and -not $script:selfId) { $script:selfId = $r.self }
+        try { Save-Friends @($r.ids) $r.self } catch { Log "friends.json を書けませんでした: $($_.Exception.Message)" }
+        $script:friendsState = "ok"
+        Log "フレンド一覧を取り直しました: $($r.ids.Count) 人（キーは $($r.where) から）"
+        # 取り直す前に参加・退出した人のうち、フレンドだった人は履歴に印を付け直す（同じ鍵なので Frame 側で書き足される）
+        foreach ($u in $script:unknownJoins) {
+            if (Test-Friend $u.uid) {
+                try { Send-Osc "/wrist/history" @($u.ts, $u.kind, $u.name, $u.world, (Get-HistKey $u.ts $u.kind $u.name), $u.wid, "1") } catch {}
+            }
+        }
+        $script:unknownJoins.Clear()
+    } else {
+        $code = if ($r) { $r.code } else { "error" }
+        switch ($code) {
+            "nokey" { $script:friendsKeyBad = $true; $script:friendsState = "nokey"; Log "VRCHAT_AUTH_KEY が見つからないので、フレンドの色分けはしません（今までどおり動きます）" }
+            "401"   { $script:friendsKeyBad = $true; $script:friendsState = "bad"; Log "VRCHAT_AUTH_KEY が効きません（401）。キーを新しくして起動しなおすまで、今ある一覧を使います" }
+            default { Log "フレンド一覧を取れませんでした（$code）。今ある一覧を使い、あとでまた試します" }
+        }
+    }
+}
+
+# -RefreshFriends: 今すぐ取り直して件数だけ表示（待つ）
+function Start-FriendsRefreshNow {
+    $cfg.friends = $true
+    Start-FriendsRefresh "手動"
+    while ($script:friendsJob -and -not $script:friendsJob.handle.IsCompleted) { Start-Sleep -Milliseconds 200 }
+    Poll-FriendsRefresh
+    Write-Output ("friends`t{0}`t{1}" -f $script:friendIds.Count, $script:friendsAt.ToString("yyyy-MM-dd HH:mm:ss"))
+    exit 0
+}
+
+# 定期の取り直し（friends.json が friends_refresh_minutes 分より古いとき）。失敗したときも 1 時間はあける
+function Check-FriendsDue {
+    if (-not $cfg.friends -or $script:friendsKeyBad -or $script:friendsJob) { return }
+    $now = Get-Date
+    if (($now - $script:friendsAt).TotalMinutes -ge [double]$cfg.friends_refresh_minutes -and ($now - $script:friendsTry).TotalMinutes -ge 60) {
+        $why = if ($script:friendsAt -eq [datetime]::MinValue) { "初めて" } else { "前回から $([int]$cfg.friends_refresh_minutes) 分以上" }
+        Start-FriendsRefresh $why
+    }
+}
+
+# 一覧に無い人を覚えておき、次に取り直したときにフレンドだったら履歴に印を付け直す（API は呼ばない）
+function Note-Unknown([string]$uid, [string]$ts, [string]$kind, [string]$name) {
+    if (-not $cfg.friends -or -not $uid -or $DryRun -or $Replay -or (Test-Self $uid)) { return }
+    if ($script:unknownJoins.Count -lt 200) {
+        $script:unknownJoins.Add(@{ uid = $uid; ts = $ts; kind = $kind; name = $name; world = $script:world; wid = $script:worldId })
+    }
 }
 
 # ---------------------------------------------------------------- 参加・退出をまとめる
@@ -107,11 +283,11 @@ function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = 
 # 最後の 1 人から batch_seconds 秒たったら出す。2 人までは 1 人ずつ、3 人以上は「A さんほか N 人が参加」の 1 枚
 $script:pending = [ordered]@{}
 function Get-Now([datetime]$logTs) { if ($Replay) { $logTs } else { Get-Date } }
-function Add-Pending([string]$kind, [string]$name, [datetime]$logTs) {
+function Add-Pending([string]$kind, [string]$name, [datetime]$logTs, [bool]$friend = $false, [bool]$self = $false) {
     $now = Get-Now $logTs
     $k = "$kind|$($script:world)"
-    if (-not $script:pending.Contains($k)) { $script:pending[$k] = @{ kind = $kind; names = New-Object System.Collections.Generic.List[string]; last = $now } }
-    $b = $script:pending[$k]; $b.names.Add($name); $b.last = $now
+    if (-not $script:pending.Contains($k)) { $script:pending[$k] = @{ kind = $kind; names = New-Object System.Collections.Generic.List[object]; last = $now } }
+    $b = $script:pending[$k]; $b.names.Add(@{ name = $name; friend = $friend; self = $self }); $b.last = $now
 }
 function Flush-Pending([datetime]$now, [switch]$all) {
     foreach ($k in @($script:pending.Keys)) {
@@ -119,8 +295,23 @@ function Flush-Pending([datetime]$now, [switch]$all) {
         if (-not $all -and ($now - $b.last).TotalSeconds -lt [double]$cfg.batch_seconds) { continue }
         $script:pending.Remove($k)
         $verb = if ($b.kind -eq "join") { "参加" } else { "退出" }
-        if ($b.names.Count -le 2) { foreach ($n in $b.names) { Send-Toast $b.kind $n "が$($verb)しました" } }
-        else { Send-Toast $b.kind ("{0} さんほか {1} 人" -f $b.names[0], ($b.names.Count - 1)) "が$verb" }
+        $fnames = @($b.names | Where-Object { $_.friend -and -not $_.self } | ForEach-Object { $_.name })
+        $me = $b.names | Where-Object { $_.self } | Select-Object -First 1
+        $meName = if ($me) { $me.name } else { "" }
+        if ($b.names.Count -le 2) {
+            foreach ($n in $b.names) {
+                $fn = @(); if ($n.friend -and -not $n.self) { $fn = @($n.name) }
+                $sn = ""; if ($n.self) { $sn = $n.name }
+                Send-Toast $b.kind $n.name "が$($verb)しました" -friend:($n.friend -and -not $n.self) -friendNames $fn -self:$n.self -selfName $sn
+            }
+        }
+        else {
+            # まとめカードの先頭には自分、次にフレンドを出す（いなければ最初の人）
+            $first = $me
+            if (-not $first) { $first = $b.names | Where-Object { $_.friend } | Select-Object -First 1 }
+            if (-not $first) { $first = $b.names[0] }
+            Send-Toast $b.kind ("{0} さんほか {1} 人" -f $first.name, ($b.names.Count - 1)) "が$verb" -friend:($first.friend -and -not $first.self) -friendNames $fnames -self:([bool]$first.self) -selfName $meName
+        }
     }
 }
 
@@ -178,6 +369,7 @@ function Handle-Line([string]$line) {
     $tss = $ts.ToString("yyyy-MM-dd HH:mm:ss")
     if ($Replay) { Flush-Pending $ts }
 
+    Update-Self $body
     $w = Update-World $body
     if ($w -eq "joining") { return }
     if ($w -eq "entered") {
@@ -190,14 +382,18 @@ function Handle-Line([string]$line) {
     if ($r.Success) {
         # ワールドに入った直後は元からいた人なので通知しない（履歴には残す）
         $quiet = ($ts - $script:enteredAt).TotalSeconds -lt [double]$cfg.quiet_seconds
-        Send-Toast "join" $r.Groups[1].Value "が参加しました" $tss $script:world -quiet -worldId $script:worldId
-        if (-not ($quiet -or -not $cfg.notify_join)) { Add-Pending "join" $r.Groups[1].Value $ts }
+        $uid = $r.Groups[2].Value; $me = [bool](Test-Self $uid); $fr = [bool](Test-Friend $uid) -and -not $me
+        Send-Toast "join" $r.Groups[1].Value "が参加しました" $tss $script:world -quiet -worldId $script:worldId -friend:$fr -self:$me
+        if (-not $fr) { Note-Unknown $uid $tss "join" $r.Groups[1].Value }
+        if (-not ($quiet -or -not $cfg.notify_join)) { Add-Pending "join" $r.Groups[1].Value $ts $fr $me }
         return
     }
     $r = $reLeft.Match($body)
     if ($r.Success) {
-        Send-Toast "leave" $r.Groups[1].Value "が退出しました" $tss $script:world -quiet -worldId $script:worldId
-        if ($cfg.notify_leave) { Add-Pending "leave" $r.Groups[1].Value $ts }
+        $uid = $r.Groups[2].Value; $me = [bool](Test-Self $uid); $fr = [bool](Test-Friend $uid) -and -not $me
+        Send-Toast "leave" $r.Groups[1].Value "が退出しました" $tss $script:world -quiet -worldId $script:worldId -friend:$fr -self:$me
+        if (-not $fr) { Note-Unknown $uid $tss "leave" $r.Groups[1].Value }
+        if ($cfg.notify_leave) { Add-Pending "leave" $r.Groups[1].Value $ts $fr $me }
         return
     }
     $r = $reNotif.Match($body)
@@ -235,9 +431,11 @@ function Get-LogState {
 $script:lastBeat = [datetime]::MinValue
 $script:lastState = ""
 function Send-Heartbeat([string]$state, [switch]$force) {
-    if (-not $force -and $state -eq $script:lastState -and ((Get-Date) - $script:lastBeat).TotalSeconds -lt 30) { return }
-    $script:lastBeat = Get-Date; $script:lastState = $state
-    try { Send-Osc "/wrist/heartbeat" @($Version, $state) } catch { Log "送信エラー: $($_.Exception.Message)" }
+    $key2 = "$state|$($script:friendsState)"
+    if (-not $force -and $key2 -eq $script:lastState -and ((Get-Date) - $script:lastBeat).TotalSeconds -lt 30) { return }
+    $script:lastBeat = Get-Date; $script:lastState = $key2
+    $fs = if (-not $cfg.friends) { "off" } elseif ($script:friendsState -eq "none" -and $script:friendIds.Count) { "ok" } else { $script:friendsState }
+    try { Send-Osc "/wrist/heartbeat" @($Version, $state, $fs) } catch { Log "送信エラー: $($_.Exception.Message)" }
 }
 
 function Warn-IfErrorsOnly {
@@ -264,21 +462,27 @@ function Send-Backfill {
                 $m = $reLine.Match($line)
                 if (-not $m.Success) { continue }
                 $body = $m.Groups[3].Value.TrimEnd()
-                $kind = $null; $name = $null
+                Update-Self $body
+                $kind = $null; $name = $null; $uid = ""
                 $w = Update-World $body
                 if ($w -eq "joining") { continue }
                 if ($w -eq "entered") { $kind = "world"; $name = $script:world }
                 else {
                     $r = $reJoin.Match($body)
-                    if ($r.Success) { $kind = "join"; $name = $r.Groups[1].Value }
-                    else { $r = $reLeft.Match($body); if ($r.Success) { $kind = "leave"; $name = $r.Groups[1].Value } }
+                    if ($r.Success) { $kind = "join"; $name = $r.Groups[1].Value; $uid = $r.Groups[2].Value }
+                    else { $r = $reLeft.Match($body); if ($r.Success) { $kind = "leave"; $name = $r.Groups[1].Value; $uid = $r.Groups[2].Value } }
                 }
                 if (-not $kind) { continue }
                 $ts = [datetime]::ParseExact($m.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null).ToString("yyyy-MM-dd HH:mm:ss")
-                if ($DryRun) { Write-Output ("history`t{0}`t{1}`t{2}`t{3}`t{4}" -f $ts, $kind, $name, $script:world, $script:worldId) }
-                else {
-                    # 6 個目のワールド ID は 0.3.0 から（古い Frame 側は 5 個目までしか読まない）
-                    Send-Osc "/wrist/history" @($ts, $kind, $name, $script:world, (Get-HistKey $ts $kind $name), $script:worldId)
+                $fr = ""
+                if (Test-Self $uid) { $fr = "self" } elseif (Test-Friend $uid) { $fr = "1" }
+                if ($DryRun) {
+                    $line = "history`t{0}`t{1}`t{2}`t{3}`t{4}" -f $ts, $kind, $name, $script:world, $script:worldId
+                    if ($fr -eq "self") { $line += "`tself" } elseif ($fr) { $line += "`tfriend" }
+                    Write-Output $line
+                } else {
+                    # 6 個目のワールド ID は 0.3.0 から、7 個目のフレンドの印は 0.4.0 から（古い Frame 側は読まない）
+                    Send-Osc "/wrist/history" @($ts, $kind, $name, $script:world, (Get-HistKey $ts $kind $name), $script:worldId, $fr)
                     if ((++$count % 50) -eq 0) { Start-Sleep -Milliseconds 20 }   # 一度に送りすぎない
                 }
             }
@@ -298,8 +502,10 @@ function Read-CurrentWorld([System.IO.FileStream]$fs) {
         while ($null -ne ($l = $tmp.ReadLine())) {
             if ($l.IndexOf("[Behaviour] Entering Room: ", [StringComparison]::Ordinal) -ge 0 -or
                 $l.IndexOf("[Behaviour] Joining wrld_", [StringComparison]::Ordinal) -ge 0 -or
-                $l.IndexOf("[Behaviour] Destination set: wrld_", [StringComparison]::Ordinal) -ge 0) {
+                $l.IndexOf("[Behaviour] Destination set: wrld_", [StringComparison]::Ordinal) -ge 0 -or
+                $l.IndexOf("User Authenticated: ", [StringComparison]::Ordinal) -ge 0) {
                 $mm = $reLine.Match($l)
+                if ($mm.Success) { Update-Self $mm.Groups[3].Value.TrimEnd() }
                 if ($mm.Success -and (Update-World $mm.Groups[3].Value.TrimEnd()) -eq "entered") {
                     [void][datetime]::TryParseExact($mm.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null, 0, [ref]$script:enteredAt)
                 }
@@ -309,6 +515,12 @@ function Read-CurrentWorld([System.IO.FileStream]$fs) {
 }
 
 # ---------------------------------------------------------------- 入口
+Load-Friends
+
+if ($RefreshFriends) {
+    Start-FriendsRefreshNow
+}
+
 if ($Test) {
     Send-Toast "join" "テスト" "vrc-wrist-notifier から届きました"
     exit 0
@@ -362,6 +574,10 @@ if ($Replay) {
 }
 
 Log "vrc-wrist-notifier $Version を開始（ログの場所: $($cfg.log_dir)、Ctrl+C で終了）"
+if ($cfg.friends) {
+    if ($script:friendIds.Count) { Log "フレンド一覧: $($script:friendIds.Count) 人（$($script:friendsAt.ToString('yyyy-MM-dd HH:mm')) に取得）" }
+    Check-FriendsDue
+}
 if ($cfg.backfill_history) {
     try { Send-Backfill } catch { Log "履歴の読み込みに失敗しました: $($_.Exception.Message)" }
 }
@@ -424,6 +640,7 @@ try {
             $warned = $true
         }
         try { Flush-Pending (Get-Date) } catch { Log "送信エラー: $($_.Exception.Message)" }
+        try { Poll-FriendsRefresh; Check-FriendsDue } catch { Log "フレンド一覧のエラー: $($_.Exception.Message)" }
         Start-Sleep -Milliseconds 500
     }
 } finally {
