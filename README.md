@@ -72,3 +72,5 @@ Windows:
 - Windows 側はファイルを読むだけで、管理者権限・追加ソフト・自動起動は使いません
 
 </details>
+
+ほかの Steam Frame 用ツール: [frame-tools](https://github.com/cympfh/frame-tools)
