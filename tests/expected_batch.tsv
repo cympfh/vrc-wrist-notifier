@@ -1,0 +1,13 @@
+world	World A	ワールドに入りました
+join	One	が参加しました
+join	TwoA	が参加しました
+join	TwoB	が参加しました
+join	Mint さんほか 2 人	が参加
+join	Many0 さんほか 5 人	が参加
+join	InX0 さんほか 2 人	が参加
+leave	OutX0 さんほか 2 人	が退出
+leave	LeaveA1	が退出しました
+leave	LeaveA2	が退出しました
+world	World B	ワールドに入りました
+leave	LeaveB1	が退出しました
+leave	LeaveB2	が退出しました

@@ -20,13 +20,14 @@ param(
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
-$Version = "0.3.0"
+$Version = "0.3.1"
 
 # ---------------------------------------------------------------- 設定
 $defaults = [ordered]@{
     frame_host    = "frame"   # Steam Frame のホスト名か IP
     frame_port    = 39570
     log_dir       = ""        # 空なら %LOCALAPPDATA%Low\VRChat\VRChat
+    batch_seconds = 3         # この秒数以内の「参加」「退出」はまとめる（3 人以上なら 1 枚に）
     quiet_seconds = 10        # ワールドに入った直後の「参加」は、元からいた人なので出さない
     notify_join   = $true
     notify_leave  = $true
@@ -101,6 +102,28 @@ function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = 
     if ($quiet) { Log "履歴だけ送信: [$kind] $title" } else { Log "送信: [$kind] $title / $text" }
 }
 
+# ---------------------------------------------------------------- 参加・退出をまとめる
+# 履歴には 1 人ずつ残し（Send-Toast -quiet）、通知カードだけ「種類 + ワールド」ごとにまとめる。
+# 最後の 1 人から batch_seconds 秒たったら出す。2 人までは 1 人ずつ、3 人以上は「A さんほか N 人が参加」の 1 枚
+$script:pending = [ordered]@{}
+function Get-Now([datetime]$logTs) { if ($Replay) { $logTs } else { Get-Date } }
+function Add-Pending([string]$kind, [string]$name, [datetime]$logTs) {
+    $now = Get-Now $logTs
+    $k = "$kind|$($script:world)"
+    if (-not $script:pending.Contains($k)) { $script:pending[$k] = @{ kind = $kind; names = New-Object System.Collections.Generic.List[string]; last = $now } }
+    $b = $script:pending[$k]; $b.names.Add($name); $b.last = $now
+}
+function Flush-Pending([datetime]$now, [switch]$all) {
+    foreach ($k in @($script:pending.Keys)) {
+        $b = $script:pending[$k]
+        if (-not $all -and ($now - $b.last).TotalSeconds -lt [double]$cfg.batch_seconds) { continue }
+        $script:pending.Remove($k)
+        $verb = if ($b.kind -eq "join") { "参加" } else { "退出" }
+        if ($b.names.Count -le 2) { foreach ($n in $b.names) { Send-Toast $b.kind $n "が$($verb)しました" } }
+        else { Send-Toast $b.kind ("{0} さんほか {1} 人" -f $b.names[0], ($b.names.Count - 1)) "が$verb" }
+    }
+}
+
 # ---------------------------------------------------------------- ログの解析
 # 行の形: "2026.10.18 21:03:15 Log        -  [Behaviour] OnPlayerJoined 名前 (usr_...)"
 $reLine   = [regex]'^(\d{4}\.\d\d\.\d\d \d\d:\d\d:\d\d) (\w+)\s+-\s+(.*)$'
@@ -153,11 +176,13 @@ function Handle-Line([string]$line) {
     $ts = [datetime]::MinValue
     [void][datetime]::TryParseExact($m.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null, 0, [ref]$ts)
     $tss = $ts.ToString("yyyy-MM-dd HH:mm:ss")
+    if ($Replay) { Flush-Pending $ts }
 
     $w = Update-World $body
     if ($w -eq "joining") { return }
     if ($w -eq "entered") {
         $script:enteredAt = $ts
+        Flush-Pending $ts -all   # 前のワールドの分は先に出す（ワールドが違えば別のカード）
         Send-Toast "world" $script:world "ワールドに入りました" $tss $script:world -quiet:(-not $cfg.notify_world) -worldId $script:worldId
         return
     }
@@ -165,12 +190,14 @@ function Handle-Line([string]$line) {
     if ($r.Success) {
         # ワールドに入った直後は元からいた人なので通知しない（履歴には残す）
         $quiet = ($ts - $script:enteredAt).TotalSeconds -lt [double]$cfg.quiet_seconds
-        Send-Toast "join" $r.Groups[1].Value "が参加しました" $tss $script:world -quiet:($quiet -or -not $cfg.notify_join) -worldId $script:worldId
+        Send-Toast "join" $r.Groups[1].Value "が参加しました" $tss $script:world -quiet -worldId $script:worldId
+        if (-not ($quiet -or -not $cfg.notify_join)) { Add-Pending "join" $r.Groups[1].Value $ts }
         return
     }
     $r = $reLeft.Match($body)
     if ($r.Success) {
-        Send-Toast "leave" $r.Groups[1].Value "が退出しました" $tss $script:world -quiet:(-not $cfg.notify_leave) -worldId $script:worldId
+        Send-Toast "leave" $r.Groups[1].Value "が退出しました" $tss $script:world -quiet -worldId $script:worldId
+        if ($cfg.notify_leave) { Add-Pending "leave" $r.Groups[1].Value $ts }
         return
     }
     $r = $reNotif.Match($body)
@@ -329,6 +356,7 @@ if ($Replay) {
     foreach ($line in [System.IO.File]::ReadLines((Resolve-Path -LiteralPath $Replay).Path, [System.Text.Encoding]::UTF8)) {
         Handle-Line $line
     }
+    Flush-Pending ([datetime]::MaxValue) -all
     if (-not $DryRun) { Warn-IfErrorsOnly }
     exit 0
 }
@@ -395,6 +423,7 @@ try {
             Log "VRChat のログがまだありません。VRChat を起動すると読み始めます。"
             $warned = $true
         }
+        try { Flush-Pending (Get-Date) } catch { Log "送信エラー: $($_.Exception.Message)" }
         Start-Sleep -Milliseconds 500
     }
 } finally {

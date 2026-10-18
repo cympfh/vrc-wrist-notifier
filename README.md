@@ -83,6 +83,7 @@ irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/uni
 - 表示場所は視界の少し下（既定）か、左右の手首（`anchor = left_wrist`）を選べます
 - [frame-care](https://github.com/cympfh/frame-care)（休憩・電池・温度のお知らせ）のカードも表示します。急ぎは赤、注意は琥珀、ふつうは青緑
 - ワールドに入った直後の 10 秒は、元からいた人の「参加」を出しません
+- 3 人以上がまとめて参加・退出したときは、「Mint さんほか 4 人が参加」のように通知を 1 枚にまとめます（履歴には全員残ります）
 - ログ: `journalctl --user -u vrc-wrist-notifier -f`
 - 通信は UDP ポート 39570 の OSC（`/wrist/notify`、`/wrist/history`、`/wrist/heartbeat`）。Frame 側は家の LAN からのものだけ受け付けます
 - Windows 側はファイルを読むだけで、管理者権限・追加ソフト・自動起動は使いません

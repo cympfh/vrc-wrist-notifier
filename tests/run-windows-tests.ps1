@@ -35,6 +35,15 @@ for ($i = 0; $i -lt $n2; $i++) {
 $got3 = @(& $script -Config $cfgPath -ShowWorld)
 $want3 = @(Get-Content -LiteralPath (Join-Path $here "expected_world.tsv") -Encoding UTF8)
 if ($got3[0] -ceq $want3[0]) { Write-Host "OK   $($want3[0])" } else { Write-Host "FAIL want: $($want3[0])"; Write-Host "     got : $($got3[0])"; $fail++ }
+# 参加・退出のまとめ（1 人、2 人、3 人、大勢、参加と退出が混ざる、ワールドが違う）
+$got4 = @(& $script -Config $noConfig -Replay (Join-Path $here "sample_batch_log.txt") -DryRun)
+$want4 = @(Get-Content -LiteralPath (Join-Path $here "expected_batch.tsv") -Encoding UTF8)
+$n4 = [Math]::Max($got4.Count, $want4.Count)
+for ($i = 0; $i -lt $n4; $i++) {
+    if ($got4[$i] -ceq $want4[$i]) { Write-Host "OK   $($want4[$i])" }
+    else { Write-Host "FAIL want: $($want4[$i])"; Write-Host "     got : $($got4[$i])"; $fail++ }
+}
+$n += $n4
 Write-Host "（一時フォルダ $tmp は消していません）"
 $n += $n2 + 1
 if ($fail) { Write-Host "$fail 件失敗"; exit 1 } else { Write-Host "全 $n 件 OK"; exit 0 }
