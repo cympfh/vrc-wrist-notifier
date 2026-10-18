@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
-// wrist-toast: Steam Frame の SteamVR に小さな通知（トースト）を出す。
-// LAN から UDP で OSC の /wrist/notify を受け取り、数秒だけ視界（または手首）にカードを表示する。
-// ユーザー権限で動く。描画は cairo + pango、表示は OpenVR のオーバーレイ（SetOverlayRaw）。
+// wrist-toast: Steam Frame の SteamVR に小さな通知（トースト）を出し、入退室の履歴をダッシュボードのパネルで見せる。
+// LAN から UDP で OSC の /wrist/notify（通知）と /wrist/history（過去の分の読み込み）を受け取る。
+// ユーザー権限で動く。描画は cairo + pango、表示は OpenVR のオーバーレイ（Vulkan のテクスチャ。だめなら SetOverlayRaw）。
 
 #include "openvr.h"
+#include "draw.h"
+#include "history.h"
+#include "panel.h"
+#include "vk_texture.h"
 
 #include <arpa/inet.h>
 #include <cairo.h>
@@ -29,7 +33,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.1.0";
+static const char* kVersion = "0.2.0";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -58,6 +62,9 @@ struct Config {
     double offset_y_m = -0.18;
     int max_queue = 8;
     std::string font = "Noto Sans CJK JP";
+    std::string history_dir;          // 空なら ~/.local/state/vrc-wrist-notifier
+    bool history_panel = true;        // ダッシュボードに履歴のパネルを出す
+    double panel_width_m = 2.6;
 };
 
 static std::string trim(const std::string& s) {
@@ -86,6 +93,9 @@ static bool load_config(const std::string& path, Config& c) {
             else if (k == "offset_y_m") c.offset_y_m = std::stod(v);
             else if (k == "max_queue") c.max_queue = std::stoi(v);
             else if (k == "font") c.font = v;
+            else if (k == "history_dir") c.history_dir = v;
+            else if (k == "history_panel") c.history_panel = (v == "true" || v == "1" || v == "yes");
+            else if (k == "panel_width_m") c.panel_width_m = std::stod(v);
             else logf("警告: 知らない設定項目 %s は無視します", k.c_str());
         } catch (...) {
             logf("警告: %s の値 %s が読めません", k.c_str(), v.c_str());
@@ -196,22 +206,11 @@ static void kind_color(const std::string& kind, double& r, double& g, double& b)
 
 static const int kW = 640, kH = 160;
 
-// RGBA（乗算済みでない）の 640x160 を作る
-static std::vector<uint8_t> render(const Toast& t, const std::string& font, cairo_surface_t** keep = nullptr) {
+// トーストのカード（640x160）
+static cairo_surface_t* render_toast_surface(const Toast& t, const std::string& font) {
     cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, kW, kH);
     cairo_t* cr = cairo_create(s);
-    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-    cairo_paint(cr);
-    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-
-    // 角の丸いカード
-    double rad = 28, x = 4, y = 4, w = kW - 8, h = kH - 8;
-    cairo_new_sub_path(cr);
-    cairo_arc(cr, x + w - rad, y + rad, rad, -M_PI / 2, 0);
-    cairo_arc(cr, x + w - rad, y + h - rad, rad, 0, M_PI / 2);
-    cairo_arc(cr, x + rad, y + h - rad, rad, M_PI / 2, M_PI);
-    cairo_arc(cr, x + rad, y + rad, rad, M_PI, 3 * M_PI / 2);
-    cairo_close_path(cr);
+    draw::rounded(cr, 4, 4, kW - 8, kH - 8, 28);
     cairo_set_source_rgba(cr, 0.08, 0.09, 0.11, 0.90);
     cairo_fill_preserve(cr);
     double r, g, b;
@@ -219,88 +218,106 @@ static std::vector<uint8_t> render(const Toast& t, const std::string& font, cair
     cairo_set_source_rgba(cr, r, g, b, 0.9);
     cairo_set_line_width(cr, 4);
     cairo_stroke(cr);
-
-    // アイコンの丸
     cairo_arc(cr, 76, kH / 2.0, 46, 0, 2 * M_PI);
     cairo_set_source_rgba(cr, r, g, b, 0.95);
     cairo_fill(cr);
-
-    auto draw_text = [&](const std::string& str, const char* weight, int size, double tx, double ty, int width,
-                         double cr_, double cg, double cb, bool center) {
-        PangoLayout* layout = pango_cairo_create_layout(cr);
-        std::string desc = font + " " + weight + " " + std::to_string(size);
-        PangoFontDescription* fd = pango_font_description_from_string(desc.c_str());
-        pango_layout_set_font_description(layout, fd);
-        pango_layout_set_width(layout, width * PANGO_SCALE);
-        pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
-        if (center) pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
-        pango_layout_set_text(layout, str.c_str(), -1);
-        int lw, lh;
-        pango_layout_get_pixel_size(layout, &lw, &lh);
-        cairo_set_source_rgb(cr, cr_, cg, cb);
-        cairo_move_to(cr, tx, center ? ty - lh / 2.0 : ty);
-        pango_cairo_show_layout(cr, layout);
-        pango_font_description_free(fd);
-        g_object_unref(layout);
-    };
-    draw_text(kind_icon(t.kind), "Bold", 34, 30, kH / 2.0, 92, 0.08, 0.09, 0.11, true);
-    draw_text(t.title, "Bold", 26, 142, 28, kW - 170, 1, 1, 1, false);
-    draw_text(t.text, "Regular", 22, 142, 84, kW - 170, 0.82, 0.84, 0.88, false);
-
-    cairo_surface_flush(s);
-    std::vector<uint8_t> rgba(kW * kH * 4);
-    const uint8_t* src = cairo_image_surface_get_data(s);
-    int stride = cairo_image_surface_get_stride(s);
-    for (int yy = 0; yy < kH; yy++) {
-        for (int xx = 0; xx < kW; xx++) {
-            uint32_t px;
-            memcpy(&px, src + yy * stride + xx * 4, 4);   // ARGB（乗算済み）
-            uint8_t a = px >> 24, rr = (px >> 16) & 0xff, gg = (px >> 8) & 0xff, bb = px & 0xff;
-            uint8_t* d = &rgba[(yy * kW + xx) * 4];
-            if (a) {
-                d[0] = uint8_t(std::min(255, rr * 255 / a));
-                d[1] = uint8_t(std::min(255, gg * 255 / a));
-                d[2] = uint8_t(std::min(255, bb * 255 / a));
-            } else {
-                d[0] = d[1] = d[2] = 0;
-            }
-            d[3] = a;
-        }
-    }
+    draw::text(cr, font, kind_icon(t.kind), "Bold", 34, 76, kH / 2.0, 0, {0.08, 0.09, 0.11}, draw::Center);
+    draw::text(cr, font, t.title, "Bold", 26, 142, 50, kW - 170, {1, 1, 1});
+    draw::text(cr, font, t.text, "Regular", 22, 142, 104, kW - 170, {0.82, 0.84, 0.88});
     cairo_destroy(cr);
-    if (keep) *keep = s;
-    else cairo_surface_destroy(s);
-    return rgba;
+    return s;
 }
 
 // ------------------------------------------------------------------ SteamVR
+static const char* kToastKey = "cympfh.vrc-wrist-notifier";
+static const char* kPanelKey = "cympfh.vrc-wrist-notifier.history";
+
 struct Vr {
     bool up = false;
-    vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
+    vr::VROverlayHandle_t toast = vr::k_ulOverlayHandleInvalid;
+    vr::VROverlayHandle_t panel = vr::k_ulOverlayHandleInvalid;
+    vr::VROverlayHandle_t thumb = vr::k_ulOverlayHandleInvalid;
+    VulkanContext* vk = nullptr;
+    OverlayTexture* toast_tex = nullptr;
+    OverlayTexture* panel_tex = nullptr;
+    OverlayTexture* thumb_tex = nullptr;
+    bool use_vulkan = false;
 };
 
-static bool vr_start(Vr& v, const Config& c) {
-    vr::EVRInitError err = vr::VRInitError_None;
-    vr::VR_Init(&err, vr::VRApplication_Overlay);
-    if (err != vr::VRInitError_None) return false;
-    vr::EVROverlayError oe = vr::VROverlay()->CreateOverlay("cympfh.vrc-wrist-notifier", "Wrist Notifier", &v.overlay);
-    if (oe != vr::VROverlayError_None) {
-        logf("オーバーレイを作れません: %s", vr::VROverlay()->GetOverlayErrorNameFromEnum(oe));
-        vr::VR_Shutdown();
+static const char* oerr(vr::EVROverlayError e) { return vr::VROverlay()->GetOverlayErrorNameFromEnum(e); }
+
+// 画像をオーバーレイに渡す（Vulkan が使えればテクスチャ、だめなら SetOverlayRaw）
+static bool upload(Vr& v, vr::VROverlayHandle_t h, OverlayTexture*& tex, const std::vector<uint8_t>& rgba, int w, int hgt) {
+    if (v.use_vulkan) {
+        std::string err;
+        if (!tex) {
+            tex = new OverlayTexture();
+            if (!tex->create(*v.vk, w, hgt, err)) {
+                logf("Vulkan の画像を作れません（%s）。SetOverlayRaw に切り替えます", err.c_str());
+                delete tex;
+                tex = nullptr;
+                v.use_vulkan = false;
+            }
+        }
+        if (tex) {
+            if (tex->update(h, rgba.data(), err)) return true;
+            logf("画像を渡せませんでした: %s", err.c_str());
+            return false;
+        }
+    }
+    vr::EVROverlayError e = vr::VROverlay()->SetOverlayRaw(h, const_cast<uint8_t*>(rgba.data()), uint32_t(w), uint32_t(hgt), 4);
+    if (e != vr::VROverlayError_None) logf("SetOverlayRaw: %s", oerr(e));
+    return e == vr::VROverlayError_None;
+}
+
+static bool create_panel(Vr& v, const Config& c) {
+    vr::EVROverlayError e = vr::VROverlay()->CreateDashboardOverlay(kPanelKey, "入退室の履歴", &v.panel, &v.thumb);
+    if (e != vr::VROverlayError_None) {
+        logf("ダッシュボードのパネルを作れません: %s", oerr(e));
+        v.panel = v.thumb = vr::k_ulOverlayHandleInvalid;
         return false;
     }
-    vr::VROverlay()->SetOverlayWidthInMeters(v.overlay, float(c.width_m));
-    vr::VROverlay()->SetOverlaySortOrder(v.overlay, 100);
-    v.up = true;
-    logf("SteamVR につながりました");
+    vr::VROverlay()->SetOverlayWidthInMeters(v.panel, float(c.panel_width_m));
+    vr::VROverlay()->SetOverlayInputMethod(v.panel, vr::VROverlayInputMethod_Mouse);
+    vr::HmdVector2_t scale = {{float(HistoryPanel::kW), float(HistoryPanel::kH)}};
+    vr::VROverlay()->SetOverlayMouseScale(v.panel, &scale);
+    vr::VROverlay()->SetOverlayFlag(v.panel, vr::VROverlayFlags_SendVRSmoothScrollEvents, true);
+    logf("ダッシュボードに「入退室の履歴」を登録しました");
     return true;
 }
 
 static void vr_stop(Vr& v) {
     if (!v.up) return;
     vr::VR_Shutdown();
+    // Vulkan のものは VR_Shutdown のあとで壊す
+    delete v.toast_tex; delete v.panel_tex; delete v.thumb_tex;
+    v.toast_tex = v.panel_tex = v.thumb_tex = nullptr;
+    delete v.vk;
+    v.vk = nullptr;
     v.up = false;
-    v.overlay = vr::k_ulOverlayHandleInvalid;
+    v.toast = v.panel = v.thumb = vr::k_ulOverlayHandleInvalid;
+}
+
+static bool vr_start(Vr& v, const Config& c) {
+    vr::EVRInitError err = vr::VRInitError_None;
+    vr::VR_Init(&err, vr::VRApplication_Overlay);
+    if (err != vr::VRInitError_None) return false;
+    vr::EVROverlayError oe = vr::VROverlay()->CreateOverlay(kToastKey, "Wrist Notifier", &v.toast);
+    if (oe != vr::VROverlayError_None) {
+        logf("オーバーレイを作れません: %s", oerr(oe));
+        vr::VR_Shutdown();
+        return false;
+    }
+    v.up = true;
+    vr::VROverlay()->SetOverlayWidthInMeters(v.toast, float(c.width_m));
+    vr::VROverlay()->SetOverlaySortOrder(v.toast, 100);
+    v.vk = new VulkanContext();
+    std::string verr;
+    v.use_vulkan = v.vk->init(verr);
+    if (!v.use_vulkan) logf("Vulkan を使えません（%s）。SetOverlayRaw で表示します", verr.c_str());
+    if (c.history_panel) create_panel(v, c);
+    logf("SteamVR につながりました（画像の渡し方: %s）", v.use_vulkan ? "Vulkan" : "SetOverlayRaw");
+    return true;
 }
 
 static void place(Vr& v, const Config& c) {
@@ -310,13 +327,12 @@ static void place(Vr& v, const Config& c) {
     if (wrist) {
         dev = vr::VRSystem()->GetTrackedDeviceIndexForControllerRole(
             c.anchor == "left_wrist" ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
-        if (dev == vr::k_unTrackedDeviceIndexInvalid) {   // コントローラーが無ければ視界に出す
+        if (dev == vr::k_unTrackedDeviceIndexInvalid) {
             dev = vr::k_unTrackedDeviceIndex_Hmd;
             wrist = false;
         }
     }
     if (wrist) {
-        // 手首の上、少し手前に傾けて置く（X 軸まわりに -60°）
         double a = -60.0 * M_PI / 180.0;
         m.m[0][0] = 1;
         m.m[1][1] = float(cos(a)); m.m[1][2] = float(-sin(a));
@@ -326,7 +342,29 @@ static void place(Vr& v, const Config& c) {
         m.m[0][0] = m.m[1][1] = m.m[2][2] = 1;
         m.m[0][3] = 0; m.m[1][3] = float(c.offset_y_m); m.m[2][3] = float(-c.distance_m);
     }
-    vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(v.overlay, dev, &m);
+    vr::VROverlay()->SetOverlayTransformTrackedDeviceRelative(v.toast, dev, &m);
+}
+
+// 別のプロセスから、ダッシュボードのパネルが SteamVR にあるかだけ確かめる（Background でつなぐ）
+static int probe() {
+    vr::EVRInitError err = vr::VRInitError_None;
+    vr::VR_Init(&err, vr::VRApplication_Background);
+    if (err != vr::VRInitError_None) {
+        printf("SteamVR につながりません: %s\n", vr::VR_GetVRInitErrorAsEnglishDescription(err));
+        return 1;
+    }
+    int rc = 0;
+    for (const char* key : {kPanelKey, kToastKey}) {
+        vr::VROverlayHandle_t h = vr::k_ulOverlayHandleInvalid;
+        vr::EVROverlayError e = vr::VROverlay()->FindOverlay(key, &h);
+        uint32_t w = 0, hh = 0;
+        if (e == vr::VROverlayError_None) vr::VROverlay()->GetOverlayTextureSize(h, &w, &hh);
+        printf("FindOverlay(%s) -> %s、画像 %ux%u\n", key, oerr(e), w, hh);
+        if (e != vr::VROverlayError_None) rc = 1;
+    }
+    printf("ダッシュボード: %s\n", vr::VROverlay()->IsDashboardVisible() ? "開いている" : "閉じている");
+    vr::VR_Shutdown();
+    return rc;
 }
 
 // ------------------------------------------------------------------ 自己テスト
@@ -351,15 +389,37 @@ static int self_test() {
     for (int i = 0; i < 100; i++) longjp += "あ";
     std::string cut = clean(longjp, 31);
     check(cut.size() <= 31 + 3 && cut.substr(cut.size() - 3) == "…", "UTF-8 の途中で切らない");
+
+    HistEvent e{"2026-01-02 21:00:00", "join", "名前 \"引用\" \\ 😀", "ワールド", "k1"}, back;
+    check(hist::from_json(hist::to_json(e), back) && back.name == e.name && back.world == e.world && back.key == "k1",
+          "履歴の JSON を書いて読み戻せる");
+    char tmpl[] = "/tmp/wrist-toast-test.XXXXXX";
+    std::string dir = mkdtemp(tmpl);
+    {
+        History h(dir + "/state");
+        check(h.add(e), "履歴に追加できる");
+        check(!h.add(e), "同じ鍵は 2 回入れない");
+        check(h.add({"2026-01-02 20:00:00", "world", "前のワールド", "前のワールド", "k0"}), "過去の分を追加できる");
+        check(!h.add({"2026-01-02 20:00:00", "invite", "x", "", "k9"}), "参加・退出・ワールド以外は入れない");
+        check(h.events().size() == 2 && h.events().front().key == "k0", "時刻の順に並ぶ");
+        History h2(dir + "/state");
+        h2.load();
+        check(h2.events().size() == 2 && !h2.add(e), "読み直しても重複しない");
+        printf("（テスト用の一時ファイル: %s。消していません）\n", dir.c_str());
+    }
     printf("%s\n", fails ? "自己テスト失敗" : "自己テスト OK");
     return fails ? 1 : 0;
 }
 
 // ------------------------------------------------------------------ 本体
+static std::string home() { return getenv("HOME") ? getenv("HOME") : "."; }
 static std::string default_config_path() {
     const char* x = getenv("XDG_CONFIG_HOME");
-    std::string base = x && *x ? x : std::string(getenv("HOME") ? getenv("HOME") : ".") + "/.config";
-    return base + "/vrc-wrist-notifier/config.ini";
+    return (x && *x ? std::string(x) : home() + "/.config") + "/vrc-wrist-notifier/config.ini";
+}
+static std::string default_history_dir() {
+    const char* x = getenv("XDG_STATE_HOME");
+    return (x && *x ? std::string(x) : home() + "/.local/state") + "/vrc-wrist-notifier";
 }
 
 static double now_s() {
@@ -367,34 +427,68 @@ static double now_s() {
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
+static bool write_png(cairo_surface_t* s, const std::string& path) {
+    cairo_status_t st = cairo_surface_write_to_png(s, path.c_str());
+    cairo_surface_destroy(s);
+    printf("%s\n", st == CAIRO_STATUS_SUCCESS ? path.c_str() : "PNG を書けませんでした");
+    return st == CAIRO_STATUS_SUCCESS;
+}
+
 int main(int argc, char** argv) {
-    std::string config_path = default_config_path(), dump_png, title = "テスト", text = "wrist-toast の表示テスト",
-                kind = "test";
+    std::string config_path = default_config_path(), dump_png, dump_history, dump_thumb, history_dir_opt,
+                title = "テスト", text = "wrist-toast の表示テスト", kind = "test", filter = "all";
+    double scroll_px = 0;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
         if (a == "--version") { printf("wrist-toast %s\n", kVersion); return 0; }
         if (a == "--self-test") return self_test();
+        if (a == "--probe") return probe();
         if (a == "--config") config_path = next();
         else if (a == "--dump-png") dump_png = next();
+        else if (a == "--dump-history-png") dump_history = next();
+        else if (a == "--dump-thumbnail-png") dump_thumb = next();
+        else if (a == "--history-dir") history_dir_opt = next();
+        else if (a == "--filter") filter = next();
+        else if (a == "--scroll") scroll_px = std::stod(next());
         else if (a == "--title") title = next();
         else if (a == "--text") text = next();
         else if (a == "--kind") kind = next();
         else {
-            fprintf(stderr, "使い方: wrist-toast [--config FILE] [--self-test] [--dump-png out.png --kind join --title T --text S] [--version]\n");
+            fprintf(stderr,
+                    "使い方: wrist-toast [--config FILE]\n"
+                    "  --self-test                 自己テスト\n"
+                    "  --probe                     動いている wrist-toast のパネルが SteamVR にあるか確かめる\n"
+                    "  --dump-png OUT [--kind K --title T --text S]   通知のカードを PNG に\n"
+                    "  --dump-history-png OUT [--history-dir D] [--filter all|join|leave] [--scroll PX]   履歴のパネルを PNG に\n"
+                    "  --dump-thumbnail-png OUT    ダッシュボードのアイコンを PNG に\n"
+                    "  --version\n");
             return 2;
         }
     }
     Config c;
     bool have = load_config(config_path, c);
+    std::string history_dir = !history_dir_opt.empty() ? history_dir_opt : !c.history_dir.empty() ? c.history_dir : default_history_dir();
 
-    if (!dump_png.empty()) {   // SteamVR なしで、カードを PNG に書き出す（見た目の確認用）
+    // SteamVR なしで、見た目を PNG に書き出す
+    if (!dump_png.empty()) return write_png(render_toast_surface({kind, title, text}, c.font), dump_png) ? 0 : 1;
+    if (!dump_history.empty() || !dump_thumb.empty()) {
+        HistoryPanel panel(c.font);
         cairo_surface_t* s = nullptr;
-        render({kind, title, text}, c.font, &s);
-        cairo_status_t st = cairo_surface_write_to_png(s, dump_png.c_str());
-        cairo_surface_destroy(s);
-        printf("%s\n", st == CAIRO_STATUS_SUCCESS ? dump_png.c_str() : "PNG を書けませんでした");
-        return st == CAIRO_STATUS_SUCCESS ? 0 : 1;
+        if (!dump_thumb.empty()) {
+            panel.render_thumbnail(&s);
+            if (!write_png(s, dump_thumb)) return 1;
+        }
+        if (!dump_history.empty()) {
+            History h(history_dir);
+            h.load();
+            panel.set_filter(filter == "join" ? HistoryPanel::JoinOnly : filter == "leave" ? HistoryPanel::LeaveOnly : HistoryPanel::All);
+            panel.render(h.events());   // 中身の高さを決める
+            panel.scroll(-scroll_px / 120.0);
+            panel.render(h.events(), &s);
+            if (!write_png(s, dump_history)) return 1;
+        }
+        return 0;
     }
 
     signal(SIGTERM, [](int) { g_stop = 1; });
@@ -406,44 +500,90 @@ int main(int argc, char** argv) {
     addr.sin_port = htons(uint16_t(c.listen_port));
     if (inet_pton(AF_INET, c.listen_address.c_str(), &addr.sin_addr) != 1 ||
         bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) {
-        logf("UDP %s:%d で待てません: %s", c.listen_address.c_str(), c.listen_port, strerror(errno));
+        logf("UDP %s:%d で待てません: %s（もう動いていませんか？）", c.listen_address.c_str(), c.listen_port, strerror(errno));
         return 1;
     }
-    logf("wrist-toast %s: UDP %s:%d で待っています（受け付ける送り元: %s、表示場所: %s、設定: %s）", kVersion,
+    History history(history_dir);
+    history.load();
+    logf("wrist-toast %s: UDP %s:%d で待っています（受け付ける送り元: %s、表示場所: %s、設定: %s、履歴 %zu 件: %s）", kVersion,
          c.listen_address.c_str(), c.listen_port, c.allow_from.c_str(), c.anchor.c_str(),
-         have ? config_path.c_str() : "既定値");
+         have ? config_path.c_str() : "既定値", history.events().size(), history.path().c_str());
 
     Vr v;
+    HistoryPanel panel(c.font);
     std::deque<Toast> queue;
-    bool showing = false;
-    double shown_at = 0, next_vr_try = 0, window_start = 0;
+    bool showing = false, panel_dirty = true, thumb_done = false, panel_visible = false;
+    unsigned panel_version = ~0u;
+    double shown_at = 0, next_vr_try = 0, window_start = 0, next_check = 0;
     int window_count = 0;
-    long received = 0, shown = 0, dropped = 0;
+    long received = 0, shown = 0, dropped = 0, hist_added = 0, hist_logged = 0;
+    std::string current_world;
 
     while (!g_stop) {
         double now = now_s();
         if (!v.up && now >= next_vr_try) {
             if (!vr_start(v, c)) next_vr_try = now + 5;
+            else { panel_dirty = true; thumb_done = false; }
         }
         if (v.up) {
             vr::VREvent_t ev;
+            bool quit = false;
             while (vr::VRSystem()->PollNextEvent(&ev, sizeof ev)) {
-                if (ev.eventType == vr::VREvent_Quit) {
-                    logf("SteamVR が終わるので切断します");
-                    vr::VRSystem()->AcknowledgeQuit_Exiting();
-                    vr_stop(v);
-                    showing = false;
-                    next_vr_try = now + 5;
-                    break;
+                if (ev.eventType == vr::VREvent_Quit) quit = true;
+            }
+            if (v.panel != vr::k_ulOverlayHandleInvalid) {
+                while (vr::VROverlay()->PollNextOverlayEvent(v.panel, &ev, sizeof ev)) {
+                    double x = ev.data.mouse.x, y = HistoryPanel::kH - ev.data.mouse.y;   // 左下原点 → 左上原点
+                    switch (ev.eventType) {
+                        case vr::VREvent_MouseMove: panel_dirty |= panel.pointer_move(x, y); break;
+                        case vr::VREvent_MouseButtonDown:
+                            if (ev.data.mouse.button == vr::VRMouseButton_Left) panel_dirty |= panel.pointer_down(x, y);
+                            break;
+                        case vr::VREvent_MouseButtonUp:
+                            if (ev.data.mouse.button == vr::VRMouseButton_Left) panel_dirty |= panel.pointer_up(x, y);
+                            break;
+                        case vr::VREvent_FocusLeave: panel_dirty |= panel.pointer_leave(); break;
+                        case vr::VREvent_ScrollSmooth:
+                        case vr::VREvent_ScrollDiscrete: panel_dirty |= panel.scroll(ev.data.scroll.ydelta); break;
+                        case vr::VREvent_OverlayShown: panel_visible = true; panel_dirty = true; logf("履歴のパネルが開きました"); break;
+                        case vr::VREvent_OverlayHidden: panel_visible = false; break;
+                        default: break;
+                    }
                 }
+            }
+            if (quit) {
+                logf("SteamVR が終わるので切断します");
+                vr::VRSystem()->AcknowledgeQuit_Exiting();
+                vr_stop(v);
+                showing = false;
+                next_vr_try = now + 5;
+            }
+        }
+        // パネルが SteamVR から消えていたら作り直す（vrdashboard の作り直しなど）
+        if (v.up && c.history_panel && now >= next_check) {
+            next_check = now + 5;
+            vr::VROverlayHandle_t found = vr::k_ulOverlayHandleInvalid;
+            if (vr::VROverlay()->FindOverlay(kPanelKey, &found) != vr::VROverlayError_None || found != v.panel) {
+                logf("履歴のパネルが SteamVR に見つからないので作り直します");
+                delete v.panel_tex; delete v.thumb_tex;
+                v.panel_tex = v.thumb_tex = nullptr;
+                if (v.panel != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->DestroyOverlay(v.panel);
+                create_panel(v, c);
+                panel_dirty = true;
+                thumb_done = false;
             }
         }
 
         fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(sock, &fds);
-        timeval tv{0, 50000};
-        if (select(sock + 1, &fds, nullptr, nullptr, &tv) > 0) {
+        timeval tv{0, panel_visible ? 16000 : 50000};
+        auto readable = [&]() {
+            FD_ZERO(&fds);
+            FD_SET(sock, &fds);
+            bool r = select(sock + 1, &fds, nullptr, nullptr, &tv) > 0;
+            tv = {0, 0};   // 2 回目からは待たずに、溜まっている分だけ読む
+            return r;
+        };
+        while (readable()) {
             char buf[2048];
             sockaddr_in from{};
             socklen_t fl = sizeof from;
@@ -455,11 +595,15 @@ int main(int argc, char** argv) {
             if (n <= 0) {
             } else if (!allowed(c.allow_from, ip)) {
                 logf("受け付けない送り元 %s からのパケットを捨てました", ipstr);
-            } else if (!osc_parse(std::string(buf, size_t(n)), m) || m.address != "/wrist/notify" || m.strings.empty()) {
-                logf("%s から /wrist/notify 以外を受け取ったので捨てました", ipstr);
-            } else {
+            } else if (!osc_parse(std::string(buf, size_t(n)), m) || m.strings.empty()) {
+                logf("%s から読めないパケットを受け取ったので捨てました", ipstr);
+            } else if (m.address == "/wrist/history" && m.strings.size() >= 5) {
+                // 過去の分（Windows 側が起動時に VRChat のログから読み直したもの）。通知は出さない
+                HistEvent e{clean(m.strings[0], 19), clean(m.strings[1], 24), clean(m.strings[2], 120), clean(m.strings[3], 120),
+                            clean(m.strings[4], 200)};
+                if (history.add(e)) hist_added++;
+            } else if (m.address == "/wrist/notify") {
                 received++;
-                if (now - window_start > 1.0) { window_start = now; window_count = 0; }
                 Toast t;
                 if (m.strings.size() >= 3) t = {m.strings[0], m.strings[1], m.strings[2]};
                 else if (m.strings.size() == 2) t = {"info", m.strings[0], m.strings[1]};
@@ -467,6 +611,18 @@ int main(int argc, char** argv) {
                 t.kind = clean(t.kind, 24);
                 t.title = clean(t.title, 120);
                 t.text = clean(t.text, 240);
+                // 4〜6 個目: 時刻、ワールド、重複を除く鍵（新しい Windows 側が付ける）。7 個目が "quiet" なら履歴だけ
+                std::string ts = m.strings.size() >= 4 ? clean(m.strings[3], 19) : "";
+                std::string world = m.strings.size() >= 5 ? clean(m.strings[4], 120) : "";
+                std::string key = m.strings.size() >= 6 ? clean(m.strings[5], 200) : "";
+                bool quiet = m.strings.size() >= 7 && m.strings[6] == "quiet";
+                if (t.kind == "world") current_world = t.title;
+                else if (world.empty()) world = current_world;
+                if (t.kind == "world") world = t.title;
+                // 履歴に残すのは、時刻の付いた VRChat の出来事だけ（-Test や古い Windows 側の通知は残さない）
+                if (!ts.empty() && history.add({ts, t.kind, t.title, world, key})) hist_added++;
+                if (quiet) continue;
+                if (now - window_start > 1.0) { window_start = now; window_count = 0; }
                 if (++window_count > 10 || int(queue.size()) >= c.max_queue) {
                     dropped++;
                     logf("多すぎるので捨てました: [%s] %s", t.kind.c_str(), t.title.c_str());
@@ -474,31 +630,46 @@ int main(int argc, char** argv) {
                     logf("受信 %s: [%s] %s / %s", ipstr, t.kind.c_str(), t.title.c_str(), t.text.c_str());
                     queue.push_back(t);
                 }
+            } else {
+                logf("%s から知らないアドレス %s を受け取ったので捨てました", ipstr, m.address.c_str());
             }
         }
 
         if (v.up) {
+            // 履歴のパネル（開いているときだけ描き直す。閉じているあいだに変わった分は、開いたときに描く）
+            if (v.panel != vr::k_ulOverlayHandleInvalid) {
+                if (!thumb_done) {
+                    thumb_done = upload(v, v.thumb, v.thumb_tex, panel.render_thumbnail(), HistoryPanel::kThumb, HistoryPanel::kThumb);
+                }
+                if (history.version() != panel_version) panel_dirty = true;
+                bool first = v.panel_tex == nullptr && v.use_vulkan;
+                if (panel_dirty && (panel_visible || first || !v.use_vulkan)) {
+                    if (upload(v, v.panel, v.panel_tex, panel.render(history.events()), HistoryPanel::kW, HistoryPanel::kH)) {
+                        panel_dirty = false;
+                        panel_version = history.version();
+                    }
+                }
+            }
             if (showing) {
                 double age = now - shown_at, fade = 0.4;
                 if (age >= c.duration_s) {
-                    vr::VROverlay()->HideOverlay(v.overlay);
+                    vr::VROverlay()->HideOverlay(v.toast);
                     showing = false;
                 } else {
                     double alpha = age < fade ? age / fade : (c.duration_s - age < fade ? (c.duration_s - age) / fade : 1.0);
-                    vr::VROverlay()->SetOverlayAlpha(v.overlay, float(alpha));
+                    vr::VROverlay()->SetOverlayAlpha(v.toast, float(alpha));
                 }
             }
             if (!showing && !queue.empty()) {
                 Toast t = queue.front();
                 queue.pop_front();
-                std::vector<uint8_t> px = render(t, c.font);
-                vr::EVROverlayError e = vr::VROverlay()->SetOverlayRaw(v.overlay, px.data(), kW, kH, 4);
-                if (e != vr::VROverlayError_None) {
-                    logf("表示できませんでした: %s", vr::VROverlay()->GetOverlayErrorNameFromEnum(e));
-                } else {
+                cairo_surface_t* s = render_toast_surface(t, c.font);
+                std::vector<uint8_t> px = draw::to_rgba(s);
+                cairo_surface_destroy(s);
+                if (upload(v, v.toast, v.toast_tex, px, kW, kH)) {
                     place(v, c);
-                    vr::VROverlay()->SetOverlayAlpha(v.overlay, 0.0f);
-                    vr::VROverlay()->ShowOverlay(v.overlay);
+                    vr::VROverlay()->SetOverlayAlpha(v.toast, 0.0f);
+                    vr::VROverlay()->ShowOverlay(v.toast);
                     showing = true;
                     shown_at = now;
                     shown++;
@@ -506,14 +677,18 @@ int main(int argc, char** argv) {
                 }
             }
         } else if (!queue.empty()) {
-            // SteamVR が動いていないあいだの通知は、あとでまとめて出しても古いので捨てる
             logf("SteamVR が動いていないので表示しません: %zu 件", queue.size());
             dropped += long(queue.size());
             queue.clear();
         }
+        if (hist_added / 200 != hist_logged / 200) {
+            hist_logged = hist_added;
+            logf("履歴に追加: これまで %ld 件", hist_added);
+        }
     }
     vr_stop(v);
     close(sock);
-    logf("終了: 受信 %ld / 表示 %ld / 捨てた %ld", received, shown, dropped);
+    logf("終了: 通知 受信 %ld / 表示 %ld / 捨てた %ld、履歴に追加 %ld 件（全 %zu 件）", received, shown, dropped, hist_added,
+         history.events().size());
     return 0;
 }
