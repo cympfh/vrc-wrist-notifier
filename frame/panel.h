@@ -27,7 +27,7 @@ public:
     static constexpr int kW = 1200, kH = 800;
     static constexpr int kThumb = 256;
     enum Filter { All = 0, JoinOnly = 1, LeaveOnly = 2 };
-    // 参加・退出の通知カードを出す相手（履歴には関係なく全員残る）
+    // 通知設定: 全員 / フレンドのみ（参加・退出をフレンドと自分だけに）/ オフ（どの通知も出さない）。履歴には関係なく全員残る
     enum Notify { NotifyAll = 0, NotifyFriends = 1, NotifyOff = 2 };
     static const char* notify_name(Notify n) { return n == NotifyFriends ? "friends" : n == NotifyOff ? "off" : "all"; }
     static Notify notify_from(const std::string& v) { return v == "friends" ? NotifyFriends : v == "off" ? NotifyOff : NotifyAll; }
@@ -247,7 +247,7 @@ private:
             else if (f == "none") note = "フレンド一覧を取得中です（履歴には全員残ります）";
             else if (f.empty()) note = "⚠ Windows 側を 0.4.1 以降にするとフレンドがわかります";
             if (note.rfind("⚠", 0) == 0) nc = {1.0, 0.72, 0.25};
-        } else if (notify_ == NotifyOff) note = "参加・退出のカードは出ません（履歴には全員残ります）";
+        } else if (notify_ == NotifyOff) note = "通知はすべて止まります（履歴には全員残ります）";
         draw::text(cr, font_, note, "Regular", 20, hx, ny, kW - int(hx) - 30, nc);
     }
 

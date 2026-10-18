@@ -34,7 +34,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.4.2";
+static const char* kVersion = "0.4.3";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -241,13 +241,13 @@ static void split_summary(const std::string& title, std::string& name, std::stri
     rest = title.substr(i);
 }
 
-// 「通知する人」で参加・退出のカードを選ぶ。ほかの種類（招待、warn、care など）はそのまま。
+// 「通知設定」でカードを選ぶ。オフならどの種類も出さない。フレンドのみは参加・退出だけに効き、ほかの種類（ワールド、招待、warn、care など）はそのまま。
 // friends / self_name: 0.4.1 の Windows 側が付ける、そのカードに入っているフレンドの名前と自分の名前（has_names = 付いていた）。
 // フレンドのみのときは、自分とフレンドだけで数えなおす（自分が先頭。2 人までは 1 人ずつ、3 人以上は「名前 さんほか N 人」）
 static std::vector<Toast> filter_people(const Toast& t, const std::string& mode, bool has_names, const std::vector<std::string>& friends,
                                         const std::string& self_name = "") {
-    if (t.kind != "join" && t.kind != "leave") return {t};
     if (mode == "off") return {};
+    if (t.kind != "join" && t.kind != "leave") return {t};
     if (mode != "friends") return {t};
     std::string n, rest;
     split_summary(t.title, n, rest);
@@ -586,11 +586,13 @@ static int self_test() {
         // 通知する人（0.4.1）
         Toast j1{"join", "Pal", "が参加しました", true}, j2{"join", "Who", "が参加しました", false};
         Toast grp{"join", "Ann さんほか 4 人", "が参加", false}, inv{"invite", "Who", "から招待", false}, care{"care.break", "休憩", "x", false};
-        check(filter_people(j2, "all", true, {}).size() == 1 && filter_people(inv, "off", true, {}).size() == 1 &&
+        check(filter_people(j2, "all", true, {}).size() == 1 && filter_people(inv, "friends", true, {}).size() == 1 &&
                   filter_people(care, "friends", true, {}).size() == 1,
-              "全員なら全部、参加・退出以外はどの設定でも出す");
-        check(filter_people(j1, "off", true, {"Pal"}).empty() && filter_people(Toast{"leave", "Pal", "", true}, "off", true, {"Pal"}).empty(),
-              "オフなら参加・退出は出さない");
+              "全員なら全部、フレンドのみでも参加・退出以外は出す");
+        check(filter_people(j1, "off", true, {"Pal"}).empty() && filter_people(Toast{"leave", "Pal", "", true}, "off", true, {"Pal"}).empty() &&
+                  filter_people(inv, "off", true, {}).empty() && filter_people(care, "off", true, {}).empty() &&
+                  filter_people(Toast{"world", "W", "ワールドに入りました"}, "off", true, {}).empty(),
+              "オフならどの通知も出さない");
         check(filter_people(j1, "friends", true, {"Pal"}).size() == 1 && filter_people(j2, "friends", true, {}).empty(),
               "フレンドのみ: 1 人のカード");
         auto g1 = filter_people(grp, "friends", true, {"Buddy"});

@@ -45,7 +45,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 ## 通知する人（0.4.1）
 
 - パネルの「通知設定」の帯で `全員` / `フレンドのみ` / `オフ` を選びます。Frame の `config.ini` の `notify_people`（`all` / `friends` / `off`）に書き、次の起動でも使います（その 1 行だけ書き換え、ほかの行とコメントは残す）
-- 効くのは参加・退出のカードだけで、招待やフレンド申請、`alert` / `warn` / `care` などはそのまま出ます。履歴にはどれでも全員残ります
+- 「フレンドのみ」が効くのは参加・退出のカードだけで、ワールド、招待、`alert` / `warn` / `care` などはそのまま出ます。「オフ」ではどの通知も出しません（0.4.3 から）。履歴にはどれでも全員残ります
 - `/wrist/notify` の 10 個目に、そのカードに入っているフレンドの名前（タブ区切り）が付きます。「フレンドのみ」では、まとめカードもフレンドだけで数えなおします（2 人までは 1 人ずつ、3 人以上は「名前 さんほか N 人」）。10 個目が無い 0.4.0 の Windows 側からは 1 人のカードだけ判断します
 - `/wrist/heartbeat` の 3 個目がフレンド一覧の状態（`ok` / `nokey` / `bad` / `none` / `off`）。「フレンドのみ」でフレンドがわからないときは、帯の右に短い注意を出します
 - `--dump-history-png … --notify friends --friends-state nokey` で帯の見た目を PNG にできます
@@ -88,7 +88,7 @@ Frame `~/.config/vrc-wrist-notifier/config.ini`
 | history_panel | true | ダッシュボードに履歴のパネルを出す |
 | panel_width_m | 2.6 | パネルの幅（メートル） |
 | history_dir | （空） | 履歴の場所。空なら `~/.local/state/vrc-wrist-notifier` |
-| notify_people | all | 参加・退出のカードを出す相手（`all` / `friends` / `off`）。パネルで選ぶと書き換わる |
+| notify_people | all | 通知設定（`all` / `friends`: 参加・退出はフレンドと自分だけ / `off`: どの通知も出さない）。パネルで選ぶと書き換わる |
 
 Windows `%APPDATA%\vrc-wrist-notifier\config.json`: `frame_host`, `frame_port`, `log_dir`（空なら既定の場所）, `quiet_seconds`, `notify_join` / `notify_leave` / `notify_world` / `notify_invite` / `notify_friend` / `notify_other`、`backfill_history`（起動時に過去のログから履歴を送る、既定 true）、`friends` / `friends_refresh_minutes` / `friends_file` / `wsl_distro`（フレンド、上を参照）。
 
