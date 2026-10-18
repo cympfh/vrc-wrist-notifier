@@ -6,6 +6,10 @@ Steam Frame の視界に小さなカードを数秒だけ出します。メニ�
 ![表示の例](docs/toast-join.png)
 ![表示の例](docs/toast-invite.png)
 
+あとから **だれがいつ来て帰ったか** を、SteamVR のダッシュボードで日付・ワールドごとに見返せます。
+
+![入退室の履歴](docs/history.png)
+
 VRChat を動かす Windows PC と Steam Frame の両方に入れます（同じ家の LAN の中だけで通信します）。
 
 ## インストール
@@ -39,6 +43,14 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\vrc-wrist-notifier\v
 
 うまくつながったかは、最後に ` -Test` を付けて起動すると、テストのカードが 1 枚出ることで確かめられます。
 
+## 履歴を見る
+
+Frame 側が動いているあいだ、SteamVR のダッシュボード（メニューボタン）の下の並びに **「入退室の履歴」** のアイコンが出ます。
+選ぶと、新しい順の一覧が開きます。上の「すべて・参加・退出」で絞り込み、スティックかドラッグでスクロールできます。
+
+- 履歴は Frame の中（`~/.local/state/vrc-wrist-notifier/`）だけに保存されます。人の名前が入るので、どこにも送りません
+- Windows 側を起動すると、PC に残っている VRChat のログからも履歴を読み込みます（同じものは 1 回だけ）
+
 ## VRChat の準備
 
 - VRChat のクイックメニュー → 設定 → **Debug**（デバッグ）のログ出力を **Full** にする。Errors Only のままだと、参加・退出が記録されないので通知できません
@@ -59,7 +71,7 @@ Windows:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/install.ps1))) -Uninstall
 ```
 
-外したファイルは消さずに `~/.local/share/vrc-wrist-notifier-uninstalled/`（Windows は `%LOCALAPPDATA%\vrc-wrist-notifier-uninstalled\`）へ移します。設定ファイルは残ります。
+外したファイルは消さずに `~/.local/share/vrc-wrist-notifier-uninstalled/`（Windows は `%LOCALAPPDATA%\vrc-wrist-notifier-uninstalled\`）へ移します。設定ファイルと履歴は残ります。
 
 <details>
 <summary>くわしい情報（設定・開発者向け）</summary>
