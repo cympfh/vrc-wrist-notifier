@@ -5,10 +5,19 @@
 #include "draw.h"
 #include "history.h"
 
+#include <algorithm>
 #include <ctime>
 #include <deque>
 #include <string>
 #include <vector>
+
+// Windows 側の見張りの様子（履歴がまだ無いときに、準備が済んでいるかを出すのに使う）
+struct WatchStatus {
+    enum Watcher { Off, Old, On } watcher = Off;   // Old: 0.3.0 より前の Windows 側（通知は届くが、様子は知らせてこない）
+    std::string version;
+    std::string log;   // VRChat のログ出力: full / errors / unknown（まだ出ていない）/ nolog（VRChat のログが無い）
+    bool operator==(const WatchStatus& o) const { return watcher == o.watcher && version == o.version && log == o.log; }
+};
 
 class HistoryPanel {
 public:
@@ -65,6 +74,12 @@ public:
     }
     bool scroll(double ydelta) { return set_scroll(scroll_ - ydelta * 120); }   // 上へ倒すと上へ
     void set_filter(Filter f) { filter_ = f; }
+    // 変わったら true（描き直しが要る）
+    bool set_status(const WatchStatus& st) {
+        if (st == status_) return false;
+        status_ = st;
+        return true;
+    }
 
     // ---------------------------------------------------------------- 描画
     std::vector<uint8_t> render(const std::deque<HistEvent>& events, cairo_surface_t** keep = nullptr) {
@@ -88,11 +103,7 @@ public:
             if (y + h >= kListTop && y <= kH) draw_row(cr, r, y, h);
             y += h;
         }
-        if (rows_.empty()) {
-            draw::text(cr, font_, "まだ履歴がありません", "Bold", 34, kW / 2.0, 380, 0, {0.85, 0.87, 0.9}, draw::Center);
-            draw::text(cr, font_, "VRChat の設定 → Debug のログ出力を「Full」にして、Windows 側を起動してください", "Regular", 22,
-                       kW / 2.0, 440, 0, {0.6, 0.63, 0.68}, draw::Center);
-        }
+        if (rows_.empty()) draw_empty(cr);
         cairo_restore(cr);
 
         // スクロールバー
@@ -158,7 +169,7 @@ private:
 
     struct Row {
         enum Type { Day, World, Event } type;
-        std::string time, text, kind;
+        std::string time, text, kind, sub;   // sub: ワールドの見出しの右側
     };
 
     struct Rect { double x, y, w, h; };
@@ -199,29 +210,56 @@ private:
                "日（" + wd[tm.tm_wday] + "）";
     }
     static std::string hm(const std::string& t) { return t.size() >= 16 ? t.substr(11, 5) : t; }
+    static std::string day_short(const std::string& t) {   // "10/18 "
+        return t.size() >= 10 ? std::to_string(std::stoi(t.substr(5, 2))) + "/" + std::to_string(std::stoi(t.substr(8, 2))) + " " : "";
+    }
 
     void build_rows(const std::deque<HistEvent>& events) {
         // ワールドに入ったところで区切った「滞在」を作り、新しい滞在から順に並べる
         struct Visit { std::string world, start; std::vector<const HistEvent*> items; };
         std::vector<Visit> visits;
+        static const std::string unknown = "（ワールド不明）";
+        auto minutes = [](const std::string& t) -> long {   // "YYYY-MM-DD HH:MM" を分に（間隔を比べるだけ）
+            struct tm tm {};
+            if (t.size() < 16) return 0;
+            tm.tm_year = std::stoi(t.substr(0, 4)) - 1900; tm.tm_mon = std::stoi(t.substr(5, 2)) - 1;
+            tm.tm_mday = std::stoi(t.substr(8, 2)); tm.tm_hour = std::stoi(t.substr(11, 2)); tm.tm_min = std::stoi(t.substr(14, 2));
+            tm.tm_isdst = -1;
+            return long(mktime(&tm) / 60);
+        };
         for (auto& e : events) {
             if (e.kind == "world") { visits.push_back({e.name, e.t, {}}); continue; }
-            if (visits.empty() || (!e.world.empty() && e.world != visits.back().world))
-                visits.push_back({e.world.empty() ? "（ワールド不明）" : e.world, e.t, {}});
+            bool new_visit = visits.empty() || (!e.world.empty() && e.world != visits.back().world);
+            if (!new_visit && e.world.empty() && visits.back().world != unknown) {
+                // ワールドのわからない記録（古い版）は、前の滞在から 30 分以上あいていたら別にする
+                const std::string& last = visits.back().items.empty() ? visits.back().start : visits.back().items.back()->t;
+                new_visit = minutes(e.t) - minutes(last) > 30;
+            }
+            if (new_visit) visits.push_back({e.world.empty() ? unknown : e.world, e.t, {}});
             visits.back().items.push_back(&e);
         }
         rows_.clear();
         std::string last_day;
         for (auto v = visits.rbegin(); v != visits.rend(); ++v) {
             std::string day = v->items.empty() ? v->start.substr(0, 10) : v->items.back()->t.substr(0, 10);
-            if (day != last_day) { rows_.push_back({Row::Day, "", day_label(day), ""}); last_day = day; }
-            rows_.push_back({Row::World, hm(v->start), v->world, "world"});
+            if (day != last_day) { rows_.push_back({Row::Day, "", day_label(day), "", ""}); last_day = day; }
+            // 見出しの右: いた時間（最初〜最後の出来事）と、来た人の数（自分を含む）
+            std::string sub = hm(v->start) + (v->world == unknown ? "" : " に入室");
+            if (!v->items.empty() && v->items.back()->t.substr(0, 16) != v->start.substr(0, 16)) {
+                std::string end = v->items.back()->t;
+                sub = hm(v->start) + " 〜 " + (end.substr(0, 10) == v->start.substr(0, 10) ? hm(end) : day_short(end) + hm(end));
+            }
+            std::vector<std::string> names;
+            for (auto* e : v->items)
+                if (e->kind == "join" && std::find(names.begin(), names.end(), e->name) == names.end()) names.push_back(e->name);
+            if (!names.empty()) sub += " ・ " + std::to_string(names.size()) + " 人";
+            rows_.push_back({Row::World, hm(v->start), v->world, "world", sub});
             for (auto it = v->items.rbegin(); it != v->items.rend(); ++it) {
                 const HistEvent& e = **it;
                 if ((filter_ == JoinOnly && e.kind != "join") || (filter_ == LeaveOnly && e.kind != "leave")) continue;
                 std::string d = e.t.substr(0, 10);
-                if (d != last_day) { rows_.push_back({Row::Day, "", day_label(d), ""}); last_day = d; }
-                rows_.push_back({Row::Event, hm(e.t), e.name, e.kind});
+                if (d != last_day) { rows_.push_back({Row::Day, "", day_label(d), "", ""}); last_day = d; }
+                rows_.push_back({Row::Event, hm(e.t), e.name, e.kind, ""});
             }
         }
     }
@@ -236,8 +274,8 @@ private:
             cairo_set_source_rgb(cr, 0.13, 0.20, 0.30);
             draw::rounded(cr, 30, y + 8, kW - 84, h - 14, 16);
             cairo_fill(cr);
-            draw::text(cr, font_, "🌐 " + r.text, "Bold", 26, 52, y + h / 2 + 1, kW - 300, {0.85, 0.92, 1.0});
-            draw::text(cr, font_, r.time + " に入室", "Regular", 22, kW - 76, y + h / 2 + 1, 0, {0.6, 0.72, 0.85}, draw::Right);
+            draw::text(cr, font_, "🌐 " + r.text, "Bold", 26, 52, y + h / 2 + 1, kW - 420, {0.85, 0.92, 1.0});
+            draw::text(cr, font_, r.sub, "Regular", 22, kW - 76, y + h / 2 + 1, 0, {0.6, 0.72, 0.85}, draw::Right);
         } else {
             draw::text(cr, font_, r.time, "Regular", 26, 60, y + h / 2, 0, {0.62, 0.65, 0.70});
             bool join = r.kind == "join";
@@ -250,6 +288,48 @@ private:
         }
     }
 
+    // 履歴がまだ無いとき: 準備の 2 つが済んでいるかを、それぞれ 1 行で
+    void draw_empty(cairo_t* cr) {
+        draw::text(cr, font_, "まだ履歴がありません", "Bold", 34, kW / 2.0, 250, 0, {0.85, 0.87, 0.9}, draw::Center);
+        struct Item { std::string label, state, hint; int level; };   // level: 0 = 済み、1 = 要対応、2 = まだ確認できない
+        std::vector<Item> items;
+        const WatchStatus& st = status_;
+        if (st.watcher == WatchStatus::Off)
+            items.push_back({"Windows 側の見張り", "動いていません", "VRChat を動かす PC で vrc-wrist-notifier を起動してください", 1});
+        else
+            items.push_back({"Windows 側の見張り", "設定済み", "", 0});
+        std::string dl = "VRChat のデバッグログ（Full）";
+        if (st.watcher == WatchStatus::Off)
+            items.push_back({dl, "まだ確認できません", "Windows 側の見張りが動くと確認します", 2});
+        else if (st.watcher == WatchStatus::Old)
+            items.push_back({dl, "まだ確認できません", "Windows 側を新しい版（0.3.0 以降）にすると確認します", 2});
+        else if (st.log == "full")
+            items.push_back({dl, "設定済み", "", 0});
+        else if (st.log == "errors")
+            items.push_back({dl, "設定されていません", "VRChat の設定 → Debug のログ出力を「Full」にしてください", 1});
+        else if (st.log == "nolog")
+            items.push_back({dl, "まだ確認できません", "VRChat を起動すると確認します", 2});
+        else
+            items.push_back({dl, "まだ確認できません", "VRChat のログがまだ出ていません。少し待つと確認します", 2});
+
+        double y = 340;
+        for (auto& it : items) {
+            draw::Rgb c = it.level == 0 ? draw::Rgb{0.35, 0.85, 0.50} : it.level == 1 ? draw::Rgb{1.0, 0.72, 0.25} : draw::Rgb{0.62, 0.65, 0.70};
+            cairo_set_source_rgba(cr, 1, 1, 1, 0.05);
+            draw::rounded(cr, 60, y - 44, kW - 120, it.hint.empty() ? 88 : 128, 20);
+            cairo_fill(cr);
+            draw::text(cr, font_, std::string(it.level == 0 ? "✔ " : it.level == 1 ? "! " : "? ") + it.label + "：" + it.state, "Bold", 28,
+                       96, y, kW - 180, c);
+            if (!it.hint.empty())
+                draw::text(cr, font_, it.hint, "Regular", 22, 128, y + 46, kW - 210, {0.75, 0.78, 0.82});
+            y += it.hint.empty() ? 120 : 160;
+        }
+        bool ready = items[0].level == 0 && items[1].level == 0;
+        if (ready)
+            draw::text(cr, font_, "準備はできています。だれかが参加・退出すると、ここに記録されます", "Regular", 22, kW / 2.0, y + 10, 0,
+                       {0.6, 0.63, 0.68}, draw::Center);
+    }
+
     bool set_scroll(double s) {
         double max = std::max(0.0, content_h_ - (kH - kListTop) + 16);
         s = std::max(0.0, std::min(max, s));
@@ -260,6 +340,7 @@ private:
 
     std::string font_;
     std::vector<Row> rows_;
+    WatchStatus status_;
     Filter filter_ = All;
     double scroll_ = 0, content_h_ = 0;
     int hover_ = -1, pressed_ = -1;

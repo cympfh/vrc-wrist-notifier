@@ -1,0 +1,16 @@
+2026.01.03 20:00:00 Log        -  [Behaviour] OnPlayerJoined SampleEarly (usr_00000000-0000-0000-0000-00000000a001)
+2026.01.03 20:10:00 Log        -  [Behaviour] Joining wrld_00000000-0000-0000-0000-0000000000a1:55555~friends(usr_00000000-0000-0000-0000-00000000aaaa)~region(jp)
+2026.01.03 20:10:01 Log        -  [Behaviour] Joining or Creating Room: 🌙 夜カフェ（サンプル）
+2026.01.03 20:10:04 Log        -  [Behaviour] Entering Room: 🌙 夜カフェ（サンプル）
+2026.01.03 20:10:05 Log        -  [Behaviour] OnPlayerJoined SampleMe (usr_00000000-0000-0000-0000-00000000aaaa)
+2026.01.03 20:12:30 Log        -  [Behaviour] OnPlayerJoined SampleFriendF (usr_00000000-0000-0000-0000-00000000a002)
+2026.01.03 20:40:00 Log        -  [Behaviour] OnPlayerLeft SampleFriendF (usr_00000000-0000-0000-0000-00000000a002)
+2026.01.03 20:45:00 Log        -  [Behaviour] OnLeftRoom
+2026.01.03 20:45:02 Log        -  [Behaviour] Entering Room: Sample Room Without Id
+2026.01.03 20:45:03 Log        -  [Behaviour] OnPlayerJoined SampleMe (usr_00000000-0000-0000-0000-00000000aaaa)
+2026.01.03 21:30:00 Debug      -  [Behaviour] OnLeftRoom
+2026.01.03 21:30:01 Debug      -  [Behaviour] Destination set: wrld_00000000-0000-0000-0000-0000000000b2:777~hidden(usr_00000000-0000-0000-0000-00000000aaaa)~region(jp)
+2026.01.03 21:30:03 Debug      -  [Behaviour] Entering Room: 星の広場 ✨
+2026.01.03 21:30:03 Debug      -  [Behaviour] Joining wrld_00000000-0000-0000-0000-0000000000b2:777~hidden(usr_00000000-0000-0000-0000-00000000aaaa)~region(jp)
+2026.01.03 21:30:03 Debug      -  [Behaviour] Joining or Creating Room: 星の広場 ✨
+2026.01.03 21:30:05 Debug      -  [Behaviour] OnPlayerJoined SampleMe (usr_00000000-0000-0000-0000-00000000aaaa)

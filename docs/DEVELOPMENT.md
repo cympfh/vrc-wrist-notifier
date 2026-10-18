@@ -23,6 +23,16 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - 画像は Vulkan のテクスチャ（`SetOverlayTexture`）で渡します。部品は [frame-mic-tuner](https://github.com/sasaken1102r/frame-mic-tuner) の `vk_texture.*`（MIT、`third_party/frame-mic-tuner/`）。`SetOverlayRaw` はちらつきとコンポジタの不調の疑いがあると同プロジェクトに記録があるため、Vulkan が使えないときだけの予備です
 - `wrist-toast --probe` で、動いている wrist-toast のパネルが SteamVR にあるかを別のプロセスから確かめられます。`--dump-history-png out.png [--history-dir D] [--filter join|leave] [--scroll PX]` で、SteamVR なしでパネルを PNG にできます
 
+## ワールド名と見張りの様子（0.3.0）
+
+- Windows 側は今いるワールドの名前と ID（`wrld_…` だけ。インスタンスの部分は人の ID が入るので送らない）を覚え、`/wrist/notify` の 8 個目、`/wrist/history` の 6 個目に ID を付けます。古い Frame 側は余分な引数を読まないだけです
+- ワールドはログのファイルごとに数えなおします（VRChat を起動しなおすと新しいファイル）。見張りを途中から始めたときは、今のログファイルを頭から読んで、最後に入ったワールドを覚えます（`-ShowWorld` で同じ読み方の結果だけを表示）
+- 履歴の 1 行に `"wid"` が増えました（無ければ書かない）。`w` と `wid` が無い古い行も読めます。同じ鍵の記録が来て、前の記録にワールドが無かったときは、ワールドを書き足した行を追記します（読み直すと後の行が勝つ）。過去のログの読み込みで、ワールド不明だった記録が埋まります
+- パネルはワールドに入ったところで区切り、見出しに「入った時刻 〜 最後の出来事の時刻 ・ 来た人数」を出します。ワールドのわからない記録は、前の滞在から 30 分以上あいていたら「（ワールド不明）」として分けます
+- Windows 側は 30 秒ごと（状態が変わったときはすぐ）に `/wrist/heartbeat ,ss 版 ログの状態` を送ります。ログの状態は今のログファイルの中身から判断します: Log / Debug の行があれば `full`、Error / Warning しか無ければ `errors`、まだ何も無ければ `unknown`、VRChat のログが無ければ `nolog`（`-Status` で同じ判断を表示）
+- Frame 側は 90 秒以内に heartbeat が来ていれば「見張りが動いている」とし、履歴がまだ無いときのパネルに、見張りとデバッグログ（Full）のそれぞれが済んでいるか、済んでいなければ何をすればよいかを出します。heartbeat が無く時刻付きの通知だけが来るときは 0.3.0 より前の Windows 側とみなします
+- `--dump-history-png out.png --history-dir 空のフォルダ --watcher on|old|off --vrc-log full|errors|unknown|nolog` で、その表示を PNG にできます
+
 ## 拾うログの行
 
 VRChat のログ出力を Full にすると出る行です（形式は [VRCX](https://github.com/vrcx-team/VRCX) の LogWatcher と同じ）。
@@ -32,6 +42,7 @@ VRChat のログ出力を Full にすると出る行です（形式は [VRCX](ht
 | 参加 | `[Behaviour] OnPlayerJoined 名前 (usr_…)` |
 | 退出 | `[Behaviour] OnPlayerLeft 名前 (usr_…)` |
 | ワールド | `[Behaviour] Entering Room: ワールド名` |
+| ワールド ID | `[Behaviour] Destination set: wrld_…:…`（入る前）、`[Behaviour] Joining wrld_…:…`（今の VRChat は入った直後、古いログは入る前） |
 | 招待など | `[API] Received Notification: <Notification from username:名前, sender user id:usr_… to … of type: invite, id: not_…, …>` |
 
 通知の種類は `invite` / `requestInvite` / `friendRequest` を出し、それ以外は `notify_other` で切り替えます。同じ `not_…` は 1 回だけ出します。
@@ -69,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File tests\run-windows-tests.ps1   # 合成�
 powershell -ExecutionPolicy Bypass -File windows\vrc-wrist-notifier.ps1 -Replay tests\sample_output_log.txt -DryRun
 ```
 
-`tests/sample_output_log.txt` と `tests/sample_history_log.txt` は形式だけまねた合成データです（実在の人やワールドは入っていません）。
+`tests/sample_output_log.txt`、`tests/sample_history_log.txt`、`tests/sample_world_log.txt` は形式だけまねた合成データです（実在の人やワールドは入っていません）。
 
 ## 自分で OSC を送る
 

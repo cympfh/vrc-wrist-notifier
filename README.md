@@ -6,7 +6,7 @@ Steam Frame の視界に小さなカードを数秒だけ出します。メニ�
 ![表示の例](docs/toast-join.png)
 ![表示の例](docs/toast-invite.png)
 
-あとから **だれがいつ来て帰ったか** を、SteamVR のダッシュボードで日付・ワールドごとに見返せます。
+あとから **どのワールドで、だれがいつ来て帰ったか** を、SteamVR のダッシュボードで見返せます。
 
 ![入退室の履歴](docs/history.png)
 
@@ -46,10 +46,13 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\vrc-wrist-notifier\v
 ## 履歴を見る
 
 Frame 側が動いているあいだ、SteamVR のダッシュボード（メニューボタン）の下の並びに **「入退室の履歴」** のアイコンが出ます。
-選ぶと、新しい順の一覧が開きます。上の「すべて・参加・退出」で絞り込み、スティックかドラッグでスクロールできます。
+選ぶと、新しい順の一覧が開きます。ワールドごとにまとまっていて、ワールド名の横に、いた時間と来た人の数が出ます。
+上の「すべて・参加・退出」で絞り込み、スティックかドラッグでスクロールできます。
+
+履歴がまだ無いときは、準備が済んでいるかを表示します（「Windows 側の見張り：設定済み」のように）。済んでいないものだけ、何をすればよいかが出ます。
 
 - 履歴は Frame の中（`~/.local/state/vrc-wrist-notifier/`）だけに保存されます。人の名前が入るので、どこにも送りません
-- Windows 側を起動すると、PC に残っている VRChat のログからも履歴を読み込みます（同じものは 1 回だけ）
+- Windows 側を起動すると、PC に残っている VRChat のログからも履歴を読み込みます（同じものは 1 回だけ。前の版でワールドがわからなかった記録も、ここで埋まります）
 
 ## VRChat の準備
 
@@ -81,7 +84,7 @@ irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/uni
 - [frame-care](https://github.com/cympfh/frame-care)（休憩・電池・温度のお知らせ）のカードも表示します。急ぎは赤、注意は琥珀、ふつうは青緑
 - ワールドに入った直後の 10 秒は、元からいた人の「参加」を出しません
 - ログ: `journalctl --user -u vrc-wrist-notifier -f`
-- 通信は UDP ポート 39570 の OSC（`/wrist/notify`）。Frame 側は家の LAN からのものだけ受け付けます
+- 通信は UDP ポート 39570 の OSC（`/wrist/notify`、`/wrist/history`、`/wrist/heartbeat`）。Frame 側は家の LAN からのものだけ受け付けます
 - Windows 側はファイルを読むだけで、管理者権限・追加ソフト・自動起動は使いません
 
 </details>

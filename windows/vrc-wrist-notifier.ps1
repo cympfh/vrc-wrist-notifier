@@ -7,16 +7,20 @@
 #   powershell -ExecutionPolicy Bypass -File vrc-wrist-notifier.ps1 -Test      # テスト通知を 1 件送る
 #   ... -Replay <ログファイル> -DryRun                                         # 送らずに検出結果だけ表示
 #   ... -Backfill [-DryRun]                                                    # 過去のログから履歴だけ送って終わる
+#   ... -ShowWorld                                                             # いちばん新しいログから、今いるワールドを表示するだけ
+#   ... -Status                                                                # VRChat のログ出力が Full になっているかを表示するだけ
 [CmdletBinding()]
 param(
     [string]$Config = "",
     [switch]$Test,
     [string]$Replay = "",
     [switch]$Backfill,
+    [switch]$ShowWorld,
+    [switch]$Status,
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
-$Version = "0.2.0"
+$Version = "0.3.0"
 
 # ---------------------------------------------------------------- 設定
 $defaults = [ordered]@{
@@ -86,13 +90,14 @@ function Send-Osc([string]$address, [string[]]$strings) {
 function Get-HistKey([string]$ts, [string]$kind, [string]$name) { "$ts|$kind|$name" }
 
 # 通知を送る。$ts（yyyy-MM-dd HH:mm:ss）と $world を付けると Frame 側の履歴にも残る。$quiet なら履歴だけ
-function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = "", [string]$world = "", [switch]$quiet) {
+# 8 個目はワールドの ID（0.3.0 から。古い Frame 側は 7 個目までしか読まないので、付けても困らない）
+function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = "", [string]$world = "", [switch]$quiet, [string]$worldId = "") {
     if ($DryRun) { if (-not $quiet) { Write-Output ("{0}`t{1}`t{2}" -f $kind, $title, $text) }; return }
     $key = ""
     if ($ts) { $key = Get-HistKey $ts $kind $title }
     $q = ""
     if ($quiet) { $q = "quiet" }
-    Send-Osc "/wrist/notify" @($kind, $title, $text, $ts, $world, $key, $q)
+    Send-Osc "/wrist/notify" @($kind, $title, $text, $ts, $world, $key, $q, $worldId)
     if ($quiet) { Log "履歴だけ送信: [$kind] $title" } else { Log "送信: [$kind] $title / $text" }
 }
 
@@ -102,13 +107,42 @@ $reLine   = [regex]'^(\d{4}\.\d\d\.\d\d \d\d:\d\d:\d\d) (\w+)\s+-\s+(.*)$'
 $reJoin   = [regex]'^\[Behaviour\] OnPlayerJoined (.+?)(?: \((usr_[0-9a-fA-F-]+)\))?$'
 $reLeft   = [regex]'^\[Behaviour\] OnPlayerLeft (.+?)(?: \((usr_[0-9a-fA-F-]+)\))?$'
 $reRoom   = [regex]'^\[Behaviour\] Entering Room: (.+)$'
+# "Destination set: wrld_xxxx:12345~private(usr_...)~region(jp)" / "Joining wrld_xxxx:..." の wrld_xxxx だけ使う
+# （インスタンスの部分には人の ID が入るので捨てる）
+$reJoining = [regex]'^\[Behaviour\] (?:Joining|Destination set:) (wrld_[0-9a-fA-F-]+)'
 $reNotif  = [regex]'^\[API\] Received Notification: <Notification from username:(.*?), sender user id:(usr_[0-9a-fA-F-]+) to .*? of type: ?(\w+), id: ?(not_[0-9a-fA-F-]+)'
 $reWorldN = [regex]'worldName=([^,}]+)'
 
 $script:enteredAt = [datetime]::MinValue
 $script:world = ""
+$script:worldId = ""
+$script:pendingId = ""
 $script:seenNotif = @{}
 $script:levels = @{}
+
+# ワールドの行なら今のワールドを覚えて "entered"（入った）か "joining"（ID の行）を返す。ほかの行は $null
+# 今の VRChat は Destination set（ID）→ Entering Room（名前）→ Joining（ID）の順。古いログは Joining が先
+function Update-World([string]$body) {
+    $r = $reJoining.Match($body)
+    if ($r.Success) {
+        # 入った直後の Joining は、今のワールドの ID（Destination set が無かったとき用）
+        $id = $r.Groups[1].Value
+        if ($script:world -and (-not $script:worldId -or $script:worldId -eq $id) -and -not $script:pendingId -and
+            $body.StartsWith("[Behaviour] Joining ")) { $script:worldId = $id }
+        else { $script:pendingId = $id }
+        return "joining"
+    }
+    $r = $reRoom.Match($body)
+    if ($r.Success) {
+        $script:world = $r.Groups[1].Value.Trim()
+        $script:worldId = $script:pendingId
+        $script:pendingId = ""
+        return "entered"
+    }
+    return $null
+}
+
+function Reset-World { $script:world = ""; $script:worldId = ""; $script:pendingId = "" }
 
 function Handle-Line([string]$line) {
     $m = $reLine.Match($line)
@@ -120,23 +154,23 @@ function Handle-Line([string]$line) {
     [void][datetime]::TryParseExact($m.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null, 0, [ref]$ts)
     $tss = $ts.ToString("yyyy-MM-dd HH:mm:ss")
 
-    $r = $reRoom.Match($body)
-    if ($r.Success) {
+    $w = Update-World $body
+    if ($w -eq "joining") { return }
+    if ($w -eq "entered") {
         $script:enteredAt = $ts
-        $script:world = $r.Groups[1].Value
-        Send-Toast "world" $script:world "ワールドに入りました" $tss $script:world -quiet:(-not $cfg.notify_world)
+        Send-Toast "world" $script:world "ワールドに入りました" $tss $script:world -quiet:(-not $cfg.notify_world) -worldId $script:worldId
         return
     }
     $r = $reJoin.Match($body)
     if ($r.Success) {
         # ワールドに入った直後は元からいた人なので通知しない（履歴には残す）
         $quiet = ($ts - $script:enteredAt).TotalSeconds -lt [double]$cfg.quiet_seconds
-        Send-Toast "join" $r.Groups[1].Value "が参加しました" $tss $script:world -quiet:($quiet -or -not $cfg.notify_join)
+        Send-Toast "join" $r.Groups[1].Value "が参加しました" $tss $script:world -quiet:($quiet -or -not $cfg.notify_join) -worldId $script:worldId
         return
     }
     $r = $reLeft.Match($body)
     if ($r.Success) {
-        Send-Toast "leave" $r.Groups[1].Value "が退出しました" $tss $script:world -quiet:(-not $cfg.notify_leave)
+        Send-Toast "leave" $r.Groups[1].Value "が退出しました" $tss $script:world -quiet:(-not $cfg.notify_leave) -worldId $script:worldId
         return
     }
     $r = $reNotif.Match($body)
@@ -160,6 +194,25 @@ function Handle-Line([string]$line) {
     }
 }
 
+# VRChat のログ出力の設定を、ログの中身から判断する: full / errors（Error しか出ていない）/ unknown（まだ何も出ていない）
+# （VRChat はこの設定をログのレベルとして書くので、Log や Debug の行があれば Full）
+function Get-LogState {
+    $useful = [int]$script:levels["Log"] + [int]$script:levels["Debug"]
+    $total = 0
+    foreach ($v in $script:levels.Values) { $total += $v }
+    if ($useful -gt 0) { "full" } elseif ($total -gt 0) { "errors" } else { "unknown" }
+}
+
+# Frame 側に「動いています」を知らせる（30 秒ごと）。古い Frame 側は知らないアドレスとして捨てるだけ
+# 引数: 版、ログ出力の状態（full / errors / unknown / nolog）
+$script:lastBeat = [datetime]::MinValue
+$script:lastState = ""
+function Send-Heartbeat([string]$state, [switch]$force) {
+    if (-not $force -and $state -eq $script:lastState -and ((Get-Date) - $script:lastBeat).TotalSeconds -lt 30) { return }
+    $script:lastBeat = Get-Date; $script:lastState = $state
+    try { Send-Osc "/wrist/heartbeat" @($Version, $state) } catch { Log "送信エラー: $($_.Exception.Message)" }
+}
+
 function Warn-IfErrorsOnly {
     $useful = [int]$script:levels["Log"] + [int]$script:levels["Debug"]
     $total = 0
@@ -173,8 +226,9 @@ function Warn-IfErrorsOnly {
 # 今ある VRChat のログ（古い順）から、参加・退出・ワールドを履歴として送る。通知は出さない
 function Send-Backfill {
     $files = @(Get-ChildItem -LiteralPath $cfg.log_dir -Filter "output_log_*.txt" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)
-    $count = 0; $world = ""
+    $count = 0
     foreach ($f in $files) {
+        Reset-World   # ワールドはログのファイルごと（VRChat を起動しなおすと新しいファイルになる）
         $fs = New-Object System.IO.FileStream($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
             ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
         $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
@@ -184,8 +238,9 @@ function Send-Backfill {
                 if (-not $m.Success) { continue }
                 $body = $m.Groups[3].Value.TrimEnd()
                 $kind = $null; $name = $null
-                $r = $reRoom.Match($body)
-                if ($r.Success) { $kind = "world"; $name = $r.Groups[1].Value; $world = $name }
+                $w = Update-World $body
+                if ($w -eq "joining") { continue }
+                if ($w -eq "entered") { $kind = "world"; $name = $script:world }
                 else {
                     $r = $reJoin.Match($body)
                     if ($r.Success) { $kind = "join"; $name = $r.Groups[1].Value }
@@ -193,15 +248,37 @@ function Send-Backfill {
                 }
                 if (-not $kind) { continue }
                 $ts = [datetime]::ParseExact($m.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null).ToString("yyyy-MM-dd HH:mm:ss")
-                if ($DryRun) { Write-Output ("history`t{0}`t{1}`t{2}`t{3}" -f $ts, $kind, $name, $world) }
+                if ($DryRun) { Write-Output ("history`t{0}`t{1}`t{2}`t{3}`t{4}" -f $ts, $kind, $name, $script:world, $script:worldId) }
                 else {
-                    Send-Osc "/wrist/history" @($ts, $kind, $name, $world, (Get-HistKey $ts $kind $name))
+                    # 6 個目のワールド ID は 0.3.0 から（古い Frame 側は 5 個目までしか読まない）
+                    Send-Osc "/wrist/history" @($ts, $kind, $name, $script:world, (Get-HistKey $ts $kind $name), $script:worldId)
                     if ((++$count % 50) -eq 0) { Start-Sleep -Milliseconds 20 }   # 一度に送りすぎない
                 }
             }
         } finally { $sr.Dispose(); $fs.Dispose() }
     }
     if (-not $DryRun) { Log "過去のログから履歴を $count 件送りました（$($files.Count) ファイル。重複は Frame 側で除きます）" }
+    Reset-World
+}
+
+# ログのファイルを頭から読んで、最後に入ったワールドを覚える（見張りを途中から始めたとき用）。
+# 速さのため、ワールドの行と通知の行だけ正規表現にかける
+function Read-CurrentWorld([System.IO.FileStream]$fs) {
+    Reset-World
+    [void]$fs.Seek(0, [System.IO.SeekOrigin]::Begin)
+    $tmp = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8, $false, 65536, $true)
+    try {
+        while ($null -ne ($l = $tmp.ReadLine())) {
+            if ($l.IndexOf("[Behaviour] Entering Room: ", [StringComparison]::Ordinal) -ge 0 -or
+                $l.IndexOf("[Behaviour] Joining wrld_", [StringComparison]::Ordinal) -ge 0 -or
+                $l.IndexOf("[Behaviour] Destination set: wrld_", [StringComparison]::Ordinal) -ge 0) {
+                $mm = $reLine.Match($l)
+                if ($mm.Success -and (Update-World $mm.Groups[3].Value.TrimEnd()) -eq "entered") {
+                    [void][datetime]::TryParseExact($mm.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null, 0, [ref]$script:enteredAt)
+                }
+            }
+        }
+    } finally { $tmp.Dispose() }
 }
 
 # ---------------------------------------------------------------- 入口
@@ -215,17 +292,45 @@ if ($Backfill) {
     exit 0
 }
 
+function Get-NewestLog {
+    Get-ChildItem -LiteralPath $cfg.log_dir -Filter "output_log_*.txt" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+}
+
+if ($Status) {
+    $newest = Get-NewestLog
+    if (-not $newest) { Write-Output "log`tnolog"; exit 0 }
+    $fs = New-Object System.IO.FileStream($newest.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+        ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+    try {
+        [void]$fs.Seek([Math]::Max(0, $fs.Length - 512KB), [System.IO.SeekOrigin]::Begin)
+        $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+        while ($null -ne ($l = $sr.ReadLine())) {
+            $mm = $reLine.Match($l)
+            if ($mm.Success) { $script:levels[$mm.Groups[2].Value] = 1 + [int]$script:levels[$mm.Groups[2].Value] }
+        }
+    } finally { $fs.Dispose() }
+    Write-Output ("log`t{0}`t{1}" -f (Get-LogState), $newest.Name)
+    exit 0
+}
+
+if ($ShowWorld) {
+    $newest = Get-NewestLog
+    if (-not $newest) { Write-Output "VRChat のログが見つかりません（$($cfg.log_dir)）"; exit 1 }
+    $fs = New-Object System.IO.FileStream($newest.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+        ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+    try { Read-CurrentWorld $fs } finally { $fs.Dispose() }
+    if ($script:world) { Write-Output ("world`t{0}`t{1}`t{2}" -f $script:world, $script:worldId, $script:enteredAt.ToString("yyyy-MM-dd HH:mm:ss")) }
+    else { Write-Output "world`t`t`t" }
+    exit 0
+}
+
 if ($Replay) {
     foreach ($line in [System.IO.File]::ReadLines((Resolve-Path -LiteralPath $Replay).Path, [System.Text.Encoding]::UTF8)) {
         Handle-Line $line
     }
     if (-not $DryRun) { Warn-IfErrorsOnly }
     exit 0
-}
-
-function Get-NewestLog {
-    Get-ChildItem -LiteralPath $cfg.log_dir -Filter "output_log_*.txt" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
 
 Log "vrc-wrist-notifier $Version を開始（ログの場所: $($cfg.log_dir)、Ctrl+C で終了）"
@@ -244,6 +349,14 @@ try {
                 $current = $newest.FullName
                 $fs = New-Object System.IO.FileStream($current, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
                     ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+                if ($isFirst) {
+                    # 途中から見はじめたときも、今いるワールドがわかるように
+                    Read-CurrentWorld $fs
+                    if ($script:world) { Log "今いるワールド: $($script:world)" }
+                } else {
+                    Reset-World   # 新しいログ = VRChat を起動しなおした
+                    $script:levels = @{}
+                }
                 if ($isFirst) {
                     # 起動前のことは通知しない。Debug 設定の確認と、通知の二重表示を防ぐため、末尾 512KB だけ読む
                     $start = [Math]::Max(0, $fs.Length - 512KB)
@@ -267,6 +380,7 @@ try {
                 Log "読んでいるログ: $(Split-Path -Leaf $current)"
             }
         }
+        if ($reader) { Send-Heartbeat (Get-LogState) } else { Send-Heartbeat "nolog" }
         if ($reader) {
             $chunk = $reader.ReadToEnd()
             if ($chunk) {

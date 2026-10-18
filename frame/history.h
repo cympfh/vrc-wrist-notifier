@@ -19,6 +19,7 @@ struct HistEvent {
     std::string name;   // 人の名前、world のときはワールド名
     std::string world;  // その時いたワールド
     std::string key;    // 重複を除くための鍵
+    std::string wid;    // ワールドの ID（wrld_...、0.3.0 から。わからなければ空）
 };
 
 namespace hist {
@@ -69,13 +70,19 @@ inline bool json_get(const std::string& line, const std::string& field, std::str
 }
 
 inline std::string to_json(const HistEvent& e) {
-    return "{\"t\":\"" + json_escape(e.t) + "\",\"k\":\"" + json_escape(e.kind) + "\",\"n\":\"" + json_escape(e.name) +
-           "\",\"w\":\"" + json_escape(e.world) + "\",\"key\":\"" + json_escape(e.key) + "\"}";
+    std::string o = "{\"t\":\"" + json_escape(e.t) + "\",\"k\":\"" + json_escape(e.kind) + "\",\"n\":\"" + json_escape(e.name) +
+                    "\",\"w\":\"" + json_escape(e.world) + "\",\"key\":\"" + json_escape(e.key) + "\"";
+    if (!e.wid.empty()) o += ",\"wid\":\"" + json_escape(e.wid) + "\"";
+    return o + "}";
 }
 
+// ワールド（w）とその ID（wid）は無くても読む（古い版の行）
 inline bool from_json(const std::string& line, HistEvent& e) {
-    return json_get(line, "t", e.t) && json_get(line, "k", e.kind) && json_get(line, "n", e.name) &&
-           json_get(line, "w", e.world) && json_get(line, "key", e.key);
+    if (!json_get(line, "t", e.t) || !json_get(line, "k", e.kind) || !json_get(line, "n", e.name)) return false;
+    if (!json_get(line, "w", e.world)) e.world.clear();
+    if (!json_get(line, "wid", e.wid)) e.wid.clear();
+    if (!json_get(line, "key", e.key)) e.key = e.t + "|" + e.kind + "|" + e.name;
+    return true;
 }
 
 inline std::string now_local() {
@@ -105,16 +112,21 @@ public:
         version_++;
     }
 
-    // 追加できたら true（同じ鍵がもうあれば false）
+    // 追加できたら true（同じ鍵がもうあれば false）。
+    // 同じ鍵でも、前の記録にワールドが無くて今回はあるなら、ワールドを書き足して true
     bool add(HistEvent e) {
         if (e.kind != "join" && e.kind != "leave" && e.kind != "world") return false;
         if (e.t.empty()) e.t = hist::now_local();
         if (e.key.empty()) e.key = e.t + "|" + e.kind + "|" + e.name;
-        if (keys_.count(e.key)) return false;
-        mkdirs();
-        rotate_if_needed();
-        std::ofstream f(path(), std::ios::app);
-        if (f) f << hist::to_json(e) << "\n";
+        if (keys_.count(e.key)) {
+            HistEvent* old = find(e.key);
+            if (!old || !fills_in(*old, e)) return false;
+            merge(*old, e);
+            append(*old);   // 読み直したときは後の行が勝つ
+            version_++;
+            return true;
+        }
+        append(e);
         insert_sorted(std::move(e));
         version_++;
         return true;
@@ -124,14 +136,36 @@ public:
     unsigned version() const { return version_; }
 
 private:
+    // b が a に無いワールドの情報を持っているか
+    static bool fills_in(const HistEvent& a, const HistEvent& b) {
+        return (a.world.empty() && !b.world.empty()) || (a.wid.empty() && !b.wid.empty() && (a.world.empty() || a.world == b.world));
+    }
+    static void merge(HistEvent& a, const HistEvent& b) {
+        if (a.world.empty()) a.world = b.world;
+        if (a.wid.empty() && a.world == b.world) a.wid = b.wid;
+    }
+    HistEvent* find(const std::string& key) {
+        for (auto it = events_.rbegin(); it != events_.rend(); ++it)
+            if (it->key == key) return &*it;
+        return nullptr;
+    }
+    void append(const HistEvent& e) {
+        mkdirs();
+        rotate_if_needed();
+        std::ofstream f(path(), std::ios::app);
+        if (f) f << hist::to_json(e) << "\n";
+    }
+
     void load_file(const std::string& p) {
         std::ifstream f(p);
         std::string line;
         HistEvent e;
         while (std::getline(f, line)) {
-            if (hist::from_json(line, e) && !keys_.count(e.key)) {
-                keys_.insert(e.key);
+            if (!hist::from_json(line, e)) continue;
+            if (!keys_.count(e.key)) {
                 insert_sorted(e);
+            } else if (HistEvent* old = find(e.key); old && fills_in(*old, e)) {
+                merge(*old, e);
             }
         }
     }

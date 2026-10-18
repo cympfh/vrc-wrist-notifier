@@ -1,8 +1,17 @@
-history	2026-01-02 21:00:03	world	Sample World	Sample World
-history	2026-01-02 21:00:04	join	SampleMe	Sample World
-history	2026-01-02 21:00:05	join	SampleFriendA	Sample World
-history	2026-01-02 21:00:30	join	サンプル太郎	Sample World
-history	2026-01-02 21:01:10	leave	SampleFriendA	Sample World
-history	2026-01-02 21:05:02	world	別のワールド	別のワールド
-history	2026-01-02 21:05:03	join	SampleMe	別のワールド
-history	2026-01-02 21:05:20	join	SampleFriendE	別のワールド
+history	2026-01-02 21:00:03	world	Sample World	Sample World	wrld_00000000-0000-0000-0000-000000000001
+history	2026-01-02 21:00:04	join	SampleMe	Sample World	wrld_00000000-0000-0000-0000-000000000001
+history	2026-01-02 21:00:05	join	SampleFriendA	Sample World	wrld_00000000-0000-0000-0000-000000000001
+history	2026-01-02 21:00:30	join	サンプル太郎	Sample World	wrld_00000000-0000-0000-0000-000000000001
+history	2026-01-02 21:01:10	leave	SampleFriendA	Sample World	wrld_00000000-0000-0000-0000-000000000001
+history	2026-01-02 21:05:02	world	別のワールド	別のワールド	
+history	2026-01-02 21:05:03	join	SampleMe	別のワールド	
+history	2026-01-02 21:05:20	join	SampleFriendE	別のワールド	
+history	2026-01-03 20:00:00	join	SampleEarly		
+history	2026-01-03 20:10:04	world	🌙 夜カフェ（サンプル）	🌙 夜カフェ（サンプル）	wrld_00000000-0000-0000-0000-0000000000a1
+history	2026-01-03 20:10:05	join	SampleMe	🌙 夜カフェ（サンプル）	wrld_00000000-0000-0000-0000-0000000000a1
+history	2026-01-03 20:12:30	join	SampleFriendF	🌙 夜カフェ（サンプル）	wrld_00000000-0000-0000-0000-0000000000a1
+history	2026-01-03 20:40:00	leave	SampleFriendF	🌙 夜カフェ（サンプル）	wrld_00000000-0000-0000-0000-0000000000a1
+history	2026-01-03 20:45:02	world	Sample Room Without Id	Sample Room Without Id	
+history	2026-01-03 20:45:03	join	SampleMe	Sample Room Without Id	
+history	2026-01-03 21:30:03	world	星の広場 ✨	星の広場 ✨	wrld_00000000-0000-0000-0000-0000000000b2
+history	2026-01-03 21:30:05	join	SampleMe	星の広場 ✨	wrld_00000000-0000-0000-0000-0000000000b2

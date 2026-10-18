@@ -33,7 +33,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.2.1";
+static const char* kVersion = "0.3.0";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -180,6 +180,14 @@ static std::string clean(const std::string& s, size_t max_bytes) {
         out = out.substr(0, n) + "…";
     }
     return out;
+}
+
+// ワールド ID は wrld_ と英数字・ハイフンだけ（それ以外なら空）
+static std::string clean_wid(const std::string& s) {
+    if (s.size() > 64 || s.rfind("wrld_", 0) != 0) return "";
+    for (unsigned char c : s)
+        if (!(isalnum(c) || c == '_' || c == '-')) return "";
+    return s;
 }
 
 // ------------------------------------------------------------------ 描画
@@ -427,7 +435,7 @@ static int self_test() {
     kind_color("join", cr_, cg, cb);
     check(std::string(kind_icon("join")) == "➕" && cg > 0.7 && cr_ < 0.4 && !is_alert("join"), "VRChat の種類は今までどおり");
 
-    HistEvent e{"2026-01-02 21:00:00", "join", "名前 \"引用\" \\ 😀", "ワールド", "k1"}, back;
+    HistEvent e{"2026-01-02 21:00:00", "join", "名前 \"引用\" \\ 😀", "ワールド", "k1", ""}, back;
     check(hist::from_json(hist::to_json(e), back) && back.name == e.name && back.world == e.world && back.key == "k1",
           "履歴の JSON を書いて読み戻せる");
     char tmpl[] = "/tmp/wrist-toast-test.XXXXXX";
@@ -436,12 +444,33 @@ static int self_test() {
         History h(dir + "/state");
         check(h.add(e), "履歴に追加できる");
         check(!h.add(e), "同じ鍵は 2 回入れない");
-        check(h.add({"2026-01-02 20:00:00", "world", "前のワールド", "前のワールド", "k0"}), "過去の分を追加できる");
-        check(!h.add({"2026-01-02 20:00:00", "invite", "x", "", "k9"}), "参加・退出・ワールド以外は入れない");
+        check(h.add({"2026-01-02 20:00:00", "world", "前のワールド", "前のワールド", "k0", ""}), "過去の分を追加できる");
+        check(!h.add({"2026-01-02 20:00:00", "invite", "x", "", "k9", ""}), "参加・退出・ワールド以外は入れない");
         check(h.events().size() == 2 && h.events().front().key == "k0", "時刻の順に並ぶ");
         History h2(dir + "/state");
         h2.load();
         check(h2.events().size() == 2 && !h2.add(e), "読み直しても重複しない");
+        // ワールド: 古い行（w・wid なし）も読める、ID は書いて読み戻せる、後から来たワールドで埋まる
+        mkdir((dir + "/old").c_str(), 0700);
+        {
+            std::ofstream f(dir + "/old/history.jsonl");
+            f << "{\"t\":\"2026-01-02 19:00:00\",\"k\":\"join\",\"n\":\"Old\",\"key\":\"o1\"}\n";
+            f << "{\"t\":\"2026-01-02 19:01:00\",\"k\":\"leave\",\"n\":\"Old\",\"w\":\"\",\"key\":\"o2\"}\n";
+        }
+        History h3(dir + "/old");
+        h3.load();
+        check(h3.events().size() == 2 && h3.events().front().world.empty(), "ワールドの無い古い履歴も読める");
+        HistEvent fill{"2026-01-02 19:00:00", "join", "Old", "🌙 夜カフェ", "o1", "wrld_00000000-0000-0000-0000-0000000000a1"};
+        check(h3.add(fill) && h3.events().front().world == "🌙 夜カフェ", "ワールドが無かった記録に後から書き足す");
+        check(!h3.add(fill), "書き足しは 1 回だけ");
+        History h4(dir + "/old");
+        h4.load();
+        check(h4.events().size() == 2 && h4.events().front().world == "🌙 夜カフェ" &&
+                  h4.events().front().wid == "wrld_00000000-0000-0000-0000-0000000000a1",
+              "書き足したワールドと ID が読み直しても残る");
+        check(clean_wid("wrld_00000000-0000-0000-0000-0000000000a1") != "" && clean_wid("wrld_x:1~private(usr_1)") == "" &&
+                  clean_wid("usr_1") == "",
+              "ワールド ID だけ受け付ける（インスタンスや人の ID は捨てる）");
         printf("（テスト用の一時ファイル: %s。消していません）\n", dir.c_str());
     }
     printf("%s\n", fails ? "自己テスト失敗" : "自己テスト OK");
@@ -473,7 +502,7 @@ static bool write_png(cairo_surface_t* s, const std::string& path) {
 
 int main(int argc, char** argv) {
     std::string config_path = default_config_path(), dump_png, dump_history, dump_thumb, history_dir_opt,
-                title = "テスト", text = "wrist-toast の表示テスト", kind = "test", filter = "all";
+                title = "テスト", text = "wrist-toast の表示テスト", kind = "test", filter = "all", watcher_opt = "off", vrc_log_opt;
     double scroll_px = 0;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -487,6 +516,8 @@ int main(int argc, char** argv) {
         else if (a == "--dump-thumbnail-png") dump_thumb = next();
         else if (a == "--history-dir") history_dir_opt = next();
         else if (a == "--filter") filter = next();
+        else if (a == "--watcher") watcher_opt = next();
+        else if (a == "--vrc-log") vrc_log_opt = next();
         else if (a == "--scroll") scroll_px = std::stod(next());
         else if (a == "--title") title = next();
         else if (a == "--text") text = next();
@@ -498,6 +529,7 @@ int main(int argc, char** argv) {
                     "  --probe                     動いている wrist-toast のパネルが SteamVR にあるか確かめる\n"
                     "  --dump-png OUT [--kind K --title T --text S]   通知のカードを PNG に\n"
                     "  --dump-history-png OUT [--history-dir D] [--filter all|join|leave] [--scroll PX]   履歴のパネルを PNG に\n"
+                    "      [--watcher on|old|off --vrc-log full|errors|unknown|nolog]   履歴が無いときの表示の確認用\n"
                     "  --dump-thumbnail-png OUT    ダッシュボードのアイコンを PNG に\n"
                     "  --version\n");
             return 2;
@@ -520,6 +552,10 @@ int main(int argc, char** argv) {
             History h(history_dir);
             h.load();
             panel.set_filter(filter == "join" ? HistoryPanel::JoinOnly : filter == "leave" ? HistoryPanel::LeaveOnly : HistoryPanel::All);
+            WatchStatus st;
+            st.watcher = watcher_opt == "on" ? WatchStatus::On : watcher_opt == "old" ? WatchStatus::Old : WatchStatus::Off;
+            st.log = vrc_log_opt;
+            panel.set_status(st);
             panel.render(h.events());   // 中身の高さを決める
             panel.scroll(-scroll_px / 120.0);
             panel.render(h.events(), &s);
@@ -554,7 +590,11 @@ int main(int argc, char** argv) {
     double shown_at = 0, shown_dur = 4, next_vr_try = 0, window_start = 0, next_check = 0;
     int window_count = 0;
     long received = 0, shown = 0, dropped = 0, hist_added = 0, hist_logged = 0;
-    std::string current_world;
+    std::string current_world, current_wid;
+    // Windows 側の見張り: /wrist/heartbeat（0.3.0 から 30 秒ごと）か、ほかのパケットがいつ来たか
+    double beat_at = -1e9, packet_at = -1e9;
+    std::string beat_version, beat_log;
+    const double kAlive = 90;
 
     while (!g_stop) {
         double now = now_s();
@@ -611,6 +651,13 @@ int main(int argc, char** argv) {
             }
         }
 
+        {
+            WatchStatus st;
+            if (now - beat_at < kAlive) { st.watcher = WatchStatus::On; st.version = beat_version; st.log = beat_log; }
+            else if (now - packet_at < kAlive) st.watcher = WatchStatus::Old;
+            panel_dirty |= panel.set_status(st);
+        }
+
         fd_set fds;
         timeval tv{0, panel_visible ? 16000 : 50000};
         auto readable = [&]() {
@@ -634,13 +681,24 @@ int main(int argc, char** argv) {
                 logf("受け付けない送り元 %s からのパケットを捨てました", ipstr);
             } else if (!osc_parse(std::string(buf, size_t(n)), m) || m.strings.empty()) {
                 logf("%s から読めないパケットを受け取ったので捨てました", ipstr);
+            } else if (m.address == "/wrist/heartbeat") {
+                // Windows 側の見張りが動いている知らせ: 版、VRChat のログ出力の状態
+                std::string ver = clean(m.strings[0], 24), lg = m.strings.size() >= 2 ? clean(m.strings[1], 16) : "";
+                if (now - beat_at >= kAlive || ver != beat_version || lg != beat_log)
+                    logf("Windows 側の見張り %s（%s）: %s、VRChat のログ出力 %s", ver.c_str(), ipstr,
+                         now - beat_at >= kAlive ? "つながりました" : "様子が変わりました", lg.c_str());
+                beat_at = packet_at = now;
+                beat_version = ver;
+                beat_log = lg;
             } else if (m.address == "/wrist/history" && m.strings.size() >= 5) {
-                // 過去の分（Windows 側が起動時に VRChat のログから読み直したもの）。通知は出さない
+                packet_at = now;
+                // 過去の分（Windows 側が起動時に VRChat のログから読み直したもの）。通知は出さない。6 個目はワールド ID（0.3.0 から）
                 HistEvent e{clean(m.strings[0], 19), clean(m.strings[1], 24), clean(m.strings[2], 120), clean(m.strings[3], 120),
-                            clean(m.strings[4], 200)};
+                            clean(m.strings[4], 200), m.strings.size() >= 6 ? clean_wid(m.strings[5]) : ""};
                 if (history.add(e)) hist_added++;
             } else if (m.address == "/wrist/notify") {
                 received++;
+                if (!m.strings.empty() && m.strings.size() >= 4) packet_at = now;   // 時刻付き = Windows 側の見張りから
                 Toast t;
                 if (m.strings.size() >= 3) t = {m.strings[0], m.strings[1], m.strings[2]};
                 else if (m.strings.size() == 2) t = {"info", m.strings[0], m.strings[1]};
@@ -653,11 +711,12 @@ int main(int argc, char** argv) {
                 std::string world = m.strings.size() >= 5 ? clean(m.strings[4], 120) : "";
                 std::string key = m.strings.size() >= 6 ? clean(m.strings[5], 200) : "";
                 bool quiet = m.strings.size() >= 7 && m.strings[6] == "quiet";
-                if (t.kind == "world") current_world = t.title;
-                else if (world.empty()) world = current_world;
+                std::string wid = m.strings.size() >= 8 ? clean_wid(m.strings[7]) : "";   // 8 個目: ワールド ID（0.3.0 から）
+                if (t.kind == "world") { current_world = t.title; current_wid = wid; }
+                else if (world.empty()) { world = current_world; if (wid.empty()) wid = current_wid; }
                 if (t.kind == "world") world = t.title;
                 // 履歴に残すのは、時刻の付いた VRChat の出来事だけ（-Test や古い Windows 側の通知は残さない）
-                if (!ts.empty() && history.add({ts, t.kind, t.title, world, key})) hist_added++;
+                if (!ts.empty() && history.add({ts, t.kind, t.title, world, key, wid})) hist_added++;
                 if (quiet) continue;
                 if (now - window_start > 1.0) { window_start = now; window_count = 0; }
                 if (++window_count > 10 || int(queue.size()) >= c.max_queue) {
