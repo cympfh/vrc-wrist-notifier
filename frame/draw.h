@@ -27,6 +27,7 @@ inline void rounded(cairo_t* cr, double x, double y, double w, double h, double 
 enum Align { Left, Center, Right };
 
 struct Rgb { double r, g, b; };
+constexpr Rgb kFriend{1.0, 0.84, 0.25};   // フレンドの名前（黄色）
 
 // 文字を描く。y は文字の縦の中心。戻り値は描いた幅（px）
 inline int text(cairo_t* cr, const std::string& font, const std::string& str, const char* weight, int size, double x,

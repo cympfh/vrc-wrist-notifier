@@ -20,6 +20,7 @@ struct HistEvent {
     std::string world;  // その時いたワールド
     std::string key;    // 重複を除くための鍵
     std::string wid;    // ワールドの ID（wrld_...、0.3.0 から。わからなければ空）
+    bool fr = false;    // フレンド（0.4.0 から。Windows 側が VRChat のフレンド一覧を持っているときだけ）
 };
 
 namespace hist {
@@ -73,6 +74,7 @@ inline std::string to_json(const HistEvent& e) {
     std::string o = "{\"t\":\"" + json_escape(e.t) + "\",\"k\":\"" + json_escape(e.kind) + "\",\"n\":\"" + json_escape(e.name) +
                     "\",\"w\":\"" + json_escape(e.world) + "\",\"key\":\"" + json_escape(e.key) + "\"";
     if (!e.wid.empty()) o += ",\"wid\":\"" + json_escape(e.wid) + "\"";
+    if (e.fr) o += ",\"f\":\"1\"";
     return o + "}";
 }
 
@@ -82,6 +84,8 @@ inline bool from_json(const std::string& line, HistEvent& e) {
     if (!json_get(line, "w", e.world)) e.world.clear();
     if (!json_get(line, "wid", e.wid)) e.wid.clear();
     if (!json_get(line, "key", e.key)) e.key = e.t + "|" + e.kind + "|" + e.name;
+    std::string f;
+    e.fr = json_get(line, "f", f) && f == "1";
     return true;
 }
 
@@ -138,11 +142,13 @@ public:
 private:
     // b が a に無いワールドの情報を持っているか
     static bool fills_in(const HistEvent& a, const HistEvent& b) {
-        return (a.world.empty() && !b.world.empty()) || (a.wid.empty() && !b.wid.empty() && (a.world.empty() || a.world == b.world));
+        return (a.world.empty() && !b.world.empty()) || (a.wid.empty() && !b.wid.empty() && (a.world.empty() || a.world == b.world)) ||
+               (!a.fr && b.fr);   // あとからフレンドだとわかった
     }
     static void merge(HistEvent& a, const HistEvent& b) {
         if (a.world.empty()) a.world = b.world;
         if (a.wid.empty() && a.world == b.world) a.wid = b.wid;
+        if (b.fr) a.fr = true;
     }
     HistEvent* find(const std::string& key) {
         for (auto it = events_.rbegin(); it != events_.rend(); ++it)

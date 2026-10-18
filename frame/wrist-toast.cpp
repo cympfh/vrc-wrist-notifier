@@ -33,7 +33,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.3.1";
+static const char* kVersion = "0.4.0";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -193,7 +193,17 @@ static std::string clean_wid(const std::string& s) {
 // ------------------------------------------------------------------ 描画
 struct Toast {
     std::string kind, title, text;
+    bool fr = false;   // 先頭の名前がフレンド（0.4.0 から。まとめカードなら「〜 さんほか N 人」の名前の部分だけ黄色）
 };
+
+// まとめカードのタイトル「名前 さんほか N 人」を、名前と残りに分ける（まとめでなければ残りは空）
+static void split_summary(const std::string& title, std::string& name, std::string& rest) {
+    static const std::string mark = " さんほか ";
+    size_t i = title.rfind(mark);
+    if (i == std::string::npos || i == 0) { name = title; rest.clear(); return; }
+    name = title.substr(0, i);
+    rest = title.substr(i);
+}
 
 // 種類は「基本.詳細」でもよい（例: alert.temp、care.break）。色は基本で、アイコンは詳細で決める。
 // VRChat 以外の通知（frame-care など）: alert / urgent = 赤、warn = 琥珀、care / info = 青緑
@@ -257,7 +267,26 @@ static cairo_surface_t* render_toast_surface(const Toast& t, const std::string& 
     cairo_set_source_rgba(cr, r, g, b, 0.95);
     cairo_fill(cr);
     draw::text(cr, font, kind_icon(t.kind), "Bold", 34, 76, kH / 2.0, 0, {0.08, 0.09, 0.11}, draw::Center);
-    draw::text(cr, font, t.title, "Bold", 26, 142, 50, kW - 170, {1, 1, 1});
+    if (t.fr) {
+        std::string name, rest;
+        split_summary(t.title, name, rest);
+        int maxw = kW - 170;
+        if (!rest.empty()) {
+            // 「さんほか N 人」は白のまま、名前だけ黄色。名前が長すぎるときは名前の側を省略する
+            cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+            cairo_t* m = cairo_create(tmp);
+            int rw = draw::text(m, font, rest, "Bold", 26, 0, 0, 0, {1, 1, 1});
+            int nw = draw::text(m, font, name, "Bold", 26, 0, 0, 0, {1, 1, 1});
+            cairo_destroy(m); cairo_surface_destroy(tmp);
+            int namew = std::min(nw + 1, std::max(60, maxw - rw));
+            int drawn = draw::text(cr, font, name, "Bold", 26, 142, 50, namew, draw::kFriend);
+            draw::text(cr, font, rest, "Bold", 26, 142 + std::min(drawn, namew), 50, maxw - std::min(drawn, namew), {1, 1, 1});
+        } else {
+            draw::text(cr, font, name, "Bold", 26, 142, 50, maxw, draw::kFriend);
+        }
+    } else {
+        draw::text(cr, font, t.title, "Bold", 26, 142, 50, kW - 170, {1, 1, 1});
+    }
     draw::text(cr, font, t.text, "Regular", 22, 142, 104, kW - 170, {0.82, 0.84, 0.88});
     cairo_destroy(cr);
     return s;
@@ -471,6 +500,24 @@ static int self_test() {
         check(clean_wid("wrld_00000000-0000-0000-0000-0000000000a1") != "" && clean_wid("wrld_x:1~private(usr_1)") == "" &&
                   clean_wid("usr_1") == "",
               "ワールド ID だけ受け付ける（インスタンスや人の ID は捨てる）");
+        // フレンド（0.4.0）: f は書いて読み戻せる、無い行は false、あとからフレンドとわかったら書き足す
+        HistEvent fe{"2026-01-02 21:30:00", "join", "Friend", "ワールド", "fr1", "", true}, fb;
+        check(hist::from_json(hist::to_json(fe), fb) && fb.fr && hist::to_json(e).find("\"f\"") == std::string::npos,
+              "フレンドの印を書いて読み戻せる（フレンドでなければ書かない）");
+        HistEvent nf = fe; nf.fr = false; nf.key = "fr2";
+        check(h3.add(nf) && !h3.events().back().fr, "フレンドでない記録");
+        nf.fr = true;
+        check(h3.add(nf) && h3.events().back().fr && !h3.add(nf), "あとからフレンドとわかったら 1 回だけ書き足す");
+        History h5(dir + "/old");
+        h5.load();
+        check(h5.events().back().fr, "フレンドの印が読み直しても残る");
+        nf.fr = false;
+        check(!h5.add(nf) && h5.events().back().fr, "フレンドの印は消えない（古い Windows 側が印なしで送り直しても）");
+        std::string sn, sr;
+        split_summary("Mint さんほか 4 人", sn, sr);
+        check(sn == "Mint" && sr == " さんほか 4 人", "まとめカードの名前を取り出す");
+        split_summary("Alice", sn, sr);
+        check(sn == "Alice" && sr.empty(), "まとめでないカードは名前だけ");
         printf("（テスト用の一時ファイル: %s。消していません）\n", dir.c_str());
     }
     printf("%s\n", fails ? "自己テスト失敗" : "自己テスト OK");
@@ -504,6 +551,7 @@ int main(int argc, char** argv) {
     std::string config_path = default_config_path(), dump_png, dump_history, dump_thumb, history_dir_opt,
                 title = "テスト", text = "wrist-toast の表示テスト", kind = "test", filter = "all", watcher_opt = "off", vrc_log_opt;
     double scroll_px = 0;
+    bool friend_opt = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -522,12 +570,13 @@ int main(int argc, char** argv) {
         else if (a == "--title") title = next();
         else if (a == "--text") text = next();
         else if (a == "--kind") kind = next();
+        else if (a == "--friend") friend_opt = true;
         else {
             fprintf(stderr,
                     "使い方: wrist-toast [--config FILE]\n"
                     "  --self-test                 自己テスト\n"
                     "  --probe                     動いている wrist-toast のパネルが SteamVR にあるか確かめる\n"
-                    "  --dump-png OUT [--kind K --title T --text S]   通知のカードを PNG に\n"
+                    "  --dump-png OUT [--kind K --title T --text S --friend]   通知のカードを PNG に（--friend: 名前をフレンドの黄色で）\n"
                     "  --dump-history-png OUT [--history-dir D] [--filter all|join|leave] [--scroll PX]   履歴のパネルを PNG に\n"
                     "      [--watcher on|old|off --vrc-log full|errors|unknown|nolog]   履歴が無いときの表示の確認用\n"
                     "  --dump-thumbnail-png OUT    ダッシュボードのアイコンを PNG に\n"
@@ -540,7 +589,7 @@ int main(int argc, char** argv) {
     std::string history_dir = !history_dir_opt.empty() ? history_dir_opt : !c.history_dir.empty() ? c.history_dir : default_history_dir();
 
     // SteamVR なしで、見た目を PNG に書き出す
-    if (!dump_png.empty()) return write_png(render_toast_surface({kind, title, text}, c.font), dump_png) ? 0 : 1;
+    if (!dump_png.empty()) return write_png(render_toast_surface({kind, title, text, friend_opt}, c.font), dump_png) ? 0 : 1;
     if (!dump_history.empty() || !dump_thumb.empty()) {
         HistoryPanel panel(c.font);
         cairo_surface_t* s = nullptr;
@@ -695,6 +744,7 @@ int main(int argc, char** argv) {
                 // 過去の分（Windows 側が起動時に VRChat のログから読み直したもの）。通知は出さない。6 個目はワールド ID（0.3.0 から）
                 HistEvent e{clean(m.strings[0], 19), clean(m.strings[1], 24), clean(m.strings[2], 120), clean(m.strings[3], 120),
                             clean(m.strings[4], 200), m.strings.size() >= 6 ? clean_wid(m.strings[5]) : ""};
+                e.fr = m.strings.size() >= 7 && m.strings[6] == "1";   // 7 個目: フレンド（0.4.0 から）
                 if (history.add(e)) hist_added++;
             } else if (m.address == "/wrist/notify") {
                 received++;
@@ -712,11 +762,12 @@ int main(int argc, char** argv) {
                 std::string key = m.strings.size() >= 6 ? clean(m.strings[5], 200) : "";
                 bool quiet = m.strings.size() >= 7 && m.strings[6] == "quiet";
                 std::string wid = m.strings.size() >= 8 ? clean_wid(m.strings[7]) : "";   // 8 個目: ワールド ID（0.3.0 から）
+                t.fr = m.strings.size() >= 9 && m.strings[8] == "1";   // 9 個目: 先頭の名前がフレンド（0.4.0 から）
                 if (t.kind == "world") { current_world = t.title; current_wid = wid; }
                 else if (world.empty()) { world = current_world; if (wid.empty()) wid = current_wid; }
                 if (t.kind == "world") world = t.title;
                 // 履歴に残すのは、時刻の付いた VRChat の出来事だけ（-Test や古い Windows 側の通知は残さない）
-                if (!ts.empty() && history.add({ts, t.kind, t.title, world, key, wid})) hist_added++;
+                if (!ts.empty() && history.add({ts, t.kind, t.title, world, key, wid, t.fr})) hist_added++;
                 if (quiet) continue;
                 if (now - window_start > 1.0) { window_start = now; window_count = 0; }
                 if (++window_count > 10 || int(queue.size()) >= c.max_queue) {
