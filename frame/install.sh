@@ -70,7 +70,7 @@ bin="$tmp/wrist-toast"
 got=""
 if [[ "$(uname -m)" == aarch64 && -z "${VRC_WRIST_BUILD:-}" ]]; then
     base="https://github.com/$repo/releases/latest/download"
-    if curl -fsSL "$base/$asset" -o "$bin" && curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"; then
+    if curl -fsL "$base/$asset" -o "$bin" && curl -fsL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"; then
         want="$(awk -v a="$asset" '$2==a{print $1}' "$tmp/SHA256SUMS")"
         have="$(sha256sum "$bin" | cut -d' ' -f1)"
         if [[ -n "$want" && "$want" == "$have" ]]; then
@@ -79,6 +79,8 @@ if [[ "$(uname -m)" == aarch64 && -z "${VRC_WRIST_BUILD:-}" ]]; then
         else
             echo "ビルド済みファイルの sha256 が合わないので使いません。"
         fi
+    else
+        echo "ビルド済みファイルを取得できませんでした。"
     fi
 fi
 if [[ -z "$got" ]]; then
