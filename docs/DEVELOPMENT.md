@@ -50,6 +50,11 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - `/wrist/heartbeat` の 3 個目がフレンド一覧の状態（`ok` / `nokey` / `bad` / `none` / `off`）。「フレンドのみ」でフレンドがわからないときは、帯の右に短い注意を出します
 - `--dump-history-png … --notify friends --friends-state nokey` で帯の見た目を PNG にできます
 
+## VRCHAT_AUTH_KEY の確認（0.4.4）
+
+- Windows 側は起動時に 1 回だけキーを確かめます。キーが無ければ API は呼ばず `nokey`、あればフレンド一覧の取り直しを兼ねて `GET /api/1/auth/user` を 1 回呼び、成功なら `ok`、401 やほかのエラーなら `bad`。結果は `/wrist/heartbeat` の 3 個目で送ります（0.4.1 からの値と同じなので、新旧どちらの組み合わせでも動きます）
+- Frame 側は `nokey` / `bad` のときだけ、パネルの右下に小さく「VRCHAT_AUTH_KEY 未設定」「VRCHAT_AUTH_KEY が使えません（期限切れ？）」と出します。問題が無いとき、見張りが動いていないとき、古い Windows 側のときは何も出しません
+
 ## 自分の名前は水色（0.4.1）
 
 - 自分の ID は VRChat のログの `[Behaviour] User Authenticated: 名前 (usr_…)` の行から取ります（API は使いません）。フレンド一覧を取ったときの `/auth/user` の `id` も friends.json の `self_id` に残し、ログに無いときに使います

@@ -22,7 +22,7 @@ param(
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
-$Version = "0.4.1"
+$Version = "0.4.4"
 
 # ---------------------------------------------------------------- 設定
 $defaults = [ordered]@{
@@ -123,7 +123,7 @@ $script:friendsAt = [datetime]::MinValue     # friends.json を取った時刻
 $script:friendsTry = [datetime]::MinValue    # 最後に取り直そうとした時刻
 $script:friendsJob = $null
 $script:friendsKeyBad = $false               # キーが無い・効かない（次に起動しなおすまで、自分からは取り直さない）
-$script:friendsState = "none"                # Frame 側に知らせる: ok / nokey / bad / none / off
+$script:friendsState = "none"                # Frame 側に知らせる: ok / nokey（未設定）/ bad（使えない）/ none（確認中）/ off
 $script:unknownJoins = New-Object System.Collections.Generic.List[object]   # 取り直したあとで、フレンドだったら履歴に印を付け直す
 
 function Load-Friends {
@@ -245,7 +245,7 @@ function Poll-FriendsRefresh {
         switch ($code) {
             "nokey" { $script:friendsKeyBad = $true; $script:friendsState = "nokey"; Log "VRCHAT_AUTH_KEY が見つからないので、フレンドの色分けはしません（今までどおり動きます）" }
             "401"   { $script:friendsKeyBad = $true; $script:friendsState = "bad"; Log "VRCHAT_AUTH_KEY が効きません（401）。キーを新しくして起動しなおすまで、今ある一覧を使います" }
-            default { Log "フレンド一覧を取れませんでした（$code）。今ある一覧を使い、あとでまた試します" }
+            default { $script:friendsState = "bad"; Log "VRCHAT_AUTH_KEY でフレンド一覧を取れませんでした（$code）。今ある一覧を使い、1 時間あとにまた試します" }
         }
     }
 }
@@ -576,7 +576,8 @@ if ($Replay) {
 Log "vrc-wrist-notifier $Version を開始（ログの場所: $($cfg.log_dir)、Ctrl+C で終了）"
 if ($cfg.friends) {
     if ($script:friendIds.Count) { Log "フレンド一覧: $($script:friendIds.Count) 人（$($script:friendsAt.ToString('yyyy-MM-dd HH:mm')) に取得）" }
-    Check-FriendsDue
+    # 起動時に 1 回だけ、キーが使えるかを確かめる（キーが無ければ API は呼ばない。あれば一覧の取り直しを兼ねて 1 回だけ呼ぶ）
+    Start-FriendsRefresh "起動時の確認"
 }
 if ($cfg.backfill_history) {
     try { Send-Backfill } catch { Log "履歴の読み込みに失敗しました: $($_.Exception.Message)" }
