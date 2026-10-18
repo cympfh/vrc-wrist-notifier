@@ -637,7 +637,7 @@ static int self_test() {
         ks.friends = "nokey";
         bool k1 = HistoryPanel::key_problem(ks) && std::string(HistoryPanel::key_problem(ks)) == "VRCHAT_AUTH_KEY 未設定";
         ks.friends = "bad";
-        bool k2 = HistoryPanel::key_problem(ks) && std::string(HistoryPanel::key_problem(ks)).find("使えません") != std::string::npos;
+        bool k2 = HistoryPanel::key_problem(ks) && std::string(HistoryPanel::key_problem(ks)) == "VRCHAT_AUTH_KEY が使えません";
         ks.friends = "ok";
         bool k3 = !HistoryPanel::key_problem(ks);
         ks.friends = "";   // 古い Windows 側

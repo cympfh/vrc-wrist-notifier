@@ -53,7 +53,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 ## VRCHAT_AUTH_KEY の確認（0.4.4）
 
 - Windows 側は起動時に 1 回だけキーを確かめます。キーが無ければ API は呼ばず `nokey`、あればフレンド一覧の取り直しを兼ねて `GET /api/1/auth/user` を 1 回呼び、成功なら `ok`、401 やほかのエラーなら `bad`。結果は `/wrist/heartbeat` の 3 個目で送ります（0.4.1 からの値と同じなので、新旧どちらの組み合わせでも動きます）
-- Frame 側は `nokey` / `bad` のときだけ、パネルの右下に小さく「VRCHAT_AUTH_KEY 未設定」「VRCHAT_AUTH_KEY が使えません（期限切れ？）」と出します。問題が無いとき、見張りが動いていないとき、古い Windows 側のときは何も出しません
+- Frame 側は `nokey` / `bad` のときだけ、パネルの右下に小さく「VRCHAT_AUTH_KEY 未設定」「VRCHAT_AUTH_KEY が使えません」と出します。問題が無いとき、見張りが動いていないとき、古い Windows 側のときは何も出しません
 
 ## 自分の名前は水色（0.4.1）
 

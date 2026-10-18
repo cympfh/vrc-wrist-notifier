@@ -256,7 +256,7 @@ public:
     static const char* key_problem(const WatchStatus& st) {
         if (st.watcher != WatchStatus::On) return nullptr;
         if (st.friends == "nokey") return "VRCHAT_AUTH_KEY 未設定";
-        if (st.friends == "bad") return "VRCHAT_AUTH_KEY が使えません（期限切れ？）";
+        if (st.friends == "bad") return "VRCHAT_AUTH_KEY が使えません";
         return nullptr;
     }
 
