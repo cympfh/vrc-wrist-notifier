@@ -73,7 +73,15 @@ powershell -ExecutionPolicy Bypass -File windows\vrc-wrist-notifier.ps1 -Replay 
 
 ## 自分で OSC を送る
 
-`/wrist/notify` に文字列 3 つ（種類、タイトル、本文）を送れば、VRChat 以外からでも表示できます。種類は `join` / `leave` / `world` / `invite` / `requestInvite` / `friendRequest` / それ以外（青）。文字列 1 つなら本文だけ、2 つならタイトルと本文として扱います。
+`/wrist/notify` に文字列 3 つ（種類、タイトル、本文）を送れば、VRChat 以外からでも表示できます。種類は `join` / `leave` / `world` / `invite` / `requestInvite` / `friendRequest` のほか、VRChat 以外の通知用に（0.2.1 から）:
+
+| 種類 | 色 | アイコン |
+|---|---|---|
+| `alert` / `urgent` | 赤（背景も赤み、枠が太く、表示は 1.5 倍の長さ） | `!` |
+| `warn` | 琥珀 | `⚠` |
+| `care` / `info` | 青緑 | `♥` |
+
+`基本.詳細`（例 `alert.temp`、`care.break`）と書くと、色は基本で、アイコンは詳細で決まります: `temp` 🌡、`battery` 🔋、`charge` ⚡、`break` ☕、`water` 💧。知らない種類は今までどおり青で表示します。[frame-care](https://github.com/cympfh/frame-care) はこの形で送ります。文字列 1 つなら本文だけ、2 つならタイトルと本文として扱います。
 
 ## リリース
 

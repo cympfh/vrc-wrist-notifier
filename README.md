@@ -78,6 +78,7 @@ Windows:
 
 - 設定: Frame は `~/.config/vrc-wrist-notifier/config.ini`、Windows は `%APPDATA%\vrc-wrist-notifier\config.json`（どちらも初回にサンプルからコピー）。項目は [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - 表示場所は視界の少し下（既定）か、左右の手首（`anchor = left_wrist`）を選べます
+- [frame-care](https://github.com/cympfh/frame-care)（休憩・電池・温度のお知らせ）のカードも表示します。急ぎは赤、注意は琥珀、ふつうは青緑
 - ワールドに入った直後の 10 秒は、元からいた人の「参加」を出しません
 - ログ: `journalctl --user -u vrc-wrist-notifier -f`
 - 通信は UDP ポート 39570 の OSC（`/wrist/notify`）。Frame 側は家の LAN からのものだけ受け付けます
