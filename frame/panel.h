@@ -235,7 +235,7 @@ private:
                        sel ? draw::Rgb{1, 1, 1} : draw::Rgb{0.70, 0.72, 0.77}, draw::Center);
         }
         // 右側: 補足（フレンドがわからないときは注意を目立たせる）
-        double hx = kSegX + 6, ny = kBarTop + 12 + kSegH + 28;   // 下の段
+        double hx = 36, ny = kBarTop + 12 + kSegH + 28;   // 下の段
         std::string note = "履歴には全員残ります";
         draw::Rgb nc{0.6, 0.63, 0.68};
         if (notify_ == NotifyFriends) {
