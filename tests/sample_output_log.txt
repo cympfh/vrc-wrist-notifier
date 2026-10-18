@@ -1,0 +1,20 @@
+2026.01.02 21:00:00 Log        -  [Behaviour] Joining wrld_00000000-0000-0000-0000-000000000001:12345~private(usr_00000000-0000-0000-0000-00000000aaaa)~region(jp)
+2026.01.02 21:00:01 Log        -  [Behaviour] Joining or Creating Room: Sample World
+2026.01.02 21:00:03 Log        -  [Behaviour] Entering Room: Sample World
+2026.01.02 21:00:04 Log        -  [Behaviour] OnPlayerJoined SampleMe (usr_00000000-0000-0000-0000-00000000aaaa)
+2026.01.02 21:00:05 Debug      -  [Behaviour] OnPlayerJoined SampleFriendA (usr_00000000-0000-0000-0000-00000000bbbb)
+2026.01.02 21:00:05 Log        -  [Behaviour] OnPlayerJoined:Unnamed
+2026.01.02 21:00:30 Log        -  [Behaviour] OnPlayerJoined サンプル太郎 (usr_00000000-0000-0000-0000-00000000cccc)
+2026.01.02 21:00:31 Error      -  [Always] Something unrelated failed
+2026.01.02 21:01:00 Log        -  [Behaviour] OnPlayerLeftRoom
+2026.01.02 21:01:10 Log        -  [Behaviour] OnPlayerLeft SampleFriendA (usr_00000000-0000-0000-0000-00000000bbbb)
+2026.01.02 21:02:00 Log        -  [API] Received Notification: <Notification from username:SampleFriendB, sender user id:usr_00000000-0000-0000-0000-00000000dddd to usr_00000000-0000-0000-0000-00000000aaaa of type: friendRequest, id: not_00000000-0000-0000-0000-000000000001, created at: 01/02/2026 12:02:00 UTC, details: {{}}, type:friendRequest, m seen:False, message: ""> received at 01/02/2026 12:02:00 UTC
+2026.01.02 21:02:01 Log        -  [API] Received Notification: <Notification from username:SampleFriendB, sender user id:usr_00000000-0000-0000-0000-00000000dddd to usr_00000000-0000-0000-0000-00000000aaaa of type: friendRequest, id: not_00000000-0000-0000-0000-000000000001, created at: 01/02/2026 12:02:00 UTC, details: {{}}, type:friendRequest, m seen:False, message: ""> received at 01/02/2026 12:02:01 UTC
+2026.01.02 21:03:00 Log        -  [API] Received Notification: <Notification from username:SampleFriendC, sender user id:usr_00000000-0000-0000-0000-00000000eeee to usr_00000000-0000-0000-0000-00000000aaaa of type: invite, id: not_00000000-0000-0000-0000-000000000002, created at: 01/02/2026 12:03:00 UTC, details: {{worldId=wrld_00000000-0000-0000-0000-000000000002:999~private(usr_00000000-0000-0000-0000-00000000eeee), worldName=Sample Cafe}}, type:invite, m seen:False, message: ""> received at 01/02/2026 12:03:00 UTC
+2026.01.02 21:03:30 Log        -  [API] Received Notification: <Notification from username:SampleFriendD, sender user id:usr_00000000-0000-0000-0000-00000000ffff to usr_00000000-0000-0000-0000-00000000aaaa of type: requestInvite, id: not_00000000-0000-0000-0000-000000000003, created at: 01/02/2026 12:03:30 UTC, details: {{}}, type:requestInvite, m seen:False, message: ""> received at 01/02/2026 12:03:30 UTC
+2026.01.02 21:03:40 Log        -  [API] Received Notification: <Notification from username:SampleFriendD, sender user id:usr_00000000-0000-0000-0000-00000000ffff to usr_00000000-0000-0000-0000-00000000aaaa of type: votetokick, id: not_00000000-0000-0000-0000-000000000004, created at: 01/02/2026 12:03:40 UTC, details: {{}}, type:votetokick, m seen:False, message: ""> received at 01/02/2026 12:03:40 UTC
+2026.01.02 21:05:00 Log        -  [Behaviour] OnLeftRoom
+2026.01.02 21:05:02 Log        -  [Behaviour] Entering Room: 別のワールド
+2026.01.02 21:05:03 Log        -  [Behaviour] OnPlayerJoined SampleMe (usr_00000000-0000-0000-0000-00000000aaaa)
+2026.01.02 21:05:20 Log        -  [Behaviour] OnPlayerJoined SampleFriendE
+

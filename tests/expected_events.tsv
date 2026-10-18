@@ -1,0 +1,8 @@
+world	Sample World	ワールドに入りました
+join	サンプル太郎	が参加しました
+leave	SampleFriendA	が退出しました
+friendRequest	SampleFriendB	からフレンド申請
+invite	SampleFriendC	から招待: Sample Cafe
+requestInvite	SampleFriendD	から招待のリクエスト
+world	別のワールド	ワールドに入りました
+join	SampleFriendE	が参加しました
