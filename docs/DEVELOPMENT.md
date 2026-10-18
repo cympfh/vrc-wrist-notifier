@@ -36,11 +36,19 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 ## フレンドの名前を黄色に（0.4.0）
 
 - Windows 側は VRChat のフレンド一覧（`usr_…` の ID だけ）を `%LOCALAPPDATA%\vrc-wrist-notifier\friends.json`（`fetched_at`、`count`、`ids`）に置きます。キーは書きません
-- 取り直すのは `friends_refresh_days`（既定 3）日ごとと、一覧に無い人が参加したとき（`friends_unknown_refresh_minutes`、既定 60 分に 1 回まで）だけ。`GET https://api.vrchat.cloud/api/1/auth/user` を 1 回呼んで `friends` を使います（User-Agent `vrc-wrist-notifier/版 cympfh`）。取り直しは別の runspace で行うので、通知は止まりません
+- 取り直すのは friends.json が `friends_refresh_minutes`（既定 60）分より古くなったときだけ（失敗したときも 1 時間はあける）。`GET https://api.vrchat.cloud/api/1/auth/user` を 1 回呼んで `friends` を使います（User-Agent `vrc-wrist-notifier/版 cympfh`）。取り直しは別の runspace で行うので、通知は止まりません
 - キー（`auth` クッキーの値）は、Windows の環境変数 `VRCHAT_AUTH_KEY`（プロセス → ユーザー）、無ければ `wsl.exe -d <wsl_distro> --exec zsh -lic` で読みます。取り直すときだけ読み、表示・ログ・保存はしません。キーが無い・401 なら、起動しなおすまで自分からは取り直さず、今までどおり動きます
 - `/wrist/notify` の 9 個目、`/wrist/history` の 7 個目が `"1"` ならフレンド。まとめカードでは先頭にフレンドを出し、「名前 さんほか N 人」の名前の部分だけ黄色にします
-- 一覧に無い人を取り直したあとでフレンドだとわかったら、同じ鍵で `/wrist/history` を送り直し、Frame 側で印を書き足します。履歴の 1 行には `"f":"1"` が付きます（フレンドでなければ書かない）。印は消えません
+- 一覧に無い人が、次に取り直したあとでフレンドだとわかったら、同じ鍵で `/wrist/history` を送り直し、Frame 側で印を書き足します。履歴の 1 行には `"f":"1"` が付きます（フレンドでなければ書かない）。印は消えません
 - `-RefreshFriends` で今すぐ取り直して件数だけ表示。`--dump-png … --friend` でフレンドのカードを PNG にできます
+
+## 通知する人（0.4.1）
+
+- パネルの「通知」の帯で `全員` / `フレンドのみ` / `オフ` を選びます。Frame の `config.ini` の `notify_people`（`all` / `friends` / `off`）に書き、次の起動でも使います（その 1 行だけ書き換え、ほかの行とコメントは残す）
+- 効くのは参加・退出のカードだけで、招待やフレンド申請、`alert` / `warn` / `care` などはそのまま出ます。履歴にはどれでも全員残ります
+- `/wrist/notify` の 10 個目に、そのカードに入っているフレンドの名前（タブ区切り）が付きます。「フレンドのみ」では、まとめカードもフレンドだけで数えなおします（2 人までは 1 人ずつ、3 人以上は「名前 さんほか N 人」）。10 個目が無い 0.4.0 の Windows 側からは 1 人のカードだけ判断します
+- `/wrist/heartbeat` の 3 個目がフレンド一覧の状態（`ok` / `nokey` / `bad` / `none` / `off`）。「フレンドのみ」でフレンドがわからないときは、帯の右に短い注意を出します
+- `--dump-history-png … --notify friends --friends-state nokey` で帯の見た目を PNG にできます
 
 ## 拾うログの行
 
@@ -74,8 +82,9 @@ Frame `~/.config/vrc-wrist-notifier/config.ini`
 | history_panel | true | ダッシュボードに履歴のパネルを出す |
 | panel_width_m | 2.6 | パネルの幅（メートル） |
 | history_dir | （空） | 履歴の場所。空なら `~/.local/state/vrc-wrist-notifier` |
+| notify_people | all | 参加・退出のカードを出す相手（`all` / `friends` / `off`）。パネルで選ぶと書き換わる |
 
-Windows `%APPDATA%\vrc-wrist-notifier\config.json`: `frame_host`, `frame_port`, `log_dir`（空なら既定の場所）, `quiet_seconds`, `notify_join` / `notify_leave` / `notify_world` / `notify_invite` / `notify_friend` / `notify_other`、`backfill_history`（起動時に過去のログから履歴を送る、既定 true）、`friends` / `friends_refresh_days` / `friends_unknown_refresh_minutes` / `friends_file` / `wsl_distro`（フレンド、上を参照）。
+Windows `%APPDATA%\vrc-wrist-notifier\config.json`: `frame_host`, `frame_port`, `log_dir`（空なら既定の場所）, `quiet_seconds`, `notify_join` / `notify_leave` / `notify_world` / `notify_invite` / `notify_friend` / `notify_other`、`backfill_history`（起動時に過去のログから履歴を送る、既定 true）、`friends` / `friends_refresh_minutes` / `friends_file` / `wsl_distro`（フレンド、上を参照）。
 
 ## テスト
 

@@ -22,7 +22,7 @@ param(
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
-$Version = "0.4.0"
+$Version = "0.4.1"
 
 # ---------------------------------------------------------------- 設定
 $defaults = [ordered]@{
@@ -39,8 +39,7 @@ $defaults = [ordered]@{
     notify_other  = $false    # それ以外の通知
     backfill_history = $true  # 起動したとき、今ある VRChat のログから参加・退出の履歴を Frame に送る（重複は Frame 側で除く）
     friends       = $true     # フレンドの名前を黄色に（VRCHAT_AUTH_KEY があるときだけ。無ければ何もしない）
-    friends_refresh_days = 3  # フレンド一覧を取り直す間隔（日）。フレンドはめったに変わらないので長めに
-    friends_unknown_refresh_minutes = 60   # 知らない人が参加したとき、取り直してよい最短の間隔（分）
+    friends_refresh_minutes = 60   # friends.json がこれより古くなったら取り直す（分）
     friends_file  = ""        # 空なら %LOCALAPPDATA%\vrc-wrist-notifier\friends.json（人の ID と取った時刻だけ。キーは書かない）
     wsl_distro    = "Ubuntu"  # Windows の環境変数に VRCHAT_AUTH_KEY が無いとき、この WSL の zsh から読む
 }
@@ -100,8 +99,9 @@ function Get-HistKey([string]$ts, [string]$kind, [string]$name) { "$ts|$kind|$na
 
 # 通知を送る。$ts（yyyy-MM-dd HH:mm:ss）と $world を付けると Frame 側の履歴にも残る。$quiet なら履歴だけ
 # 8 個目はワールドの ID（0.3.0 から。古い Frame 側は 7 個目までしか読まないので、付けても困らない）
-# 9 個目は先頭の名前がフレンドなら "1"（0.4.0 から。古い Frame 側は読まない）
-function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = "", [string]$world = "", [switch]$quiet, [string]$worldId = "", [switch]$friend) {
+# 9 個目は先頭の名前がフレンドなら "1"（0.4.0 から）、10 個目はそのカードに入っているフレンドの名前をタブ区切りで（0.4.1 から。
+# Frame 側の「フレンドのみ」で数えなおすのに使う）。古い Frame 側は読まない
+function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = "", [string]$world = "", [switch]$quiet, [string]$worldId = "", [switch]$friend, [string[]]$friendNames = @()) {
     if ($DryRun) { if (-not $quiet) { $f = ""; if ($friend) { $f = "`tfriend" }; Write-Output ("{0}`t{1}`t{2}{3}" -f $kind, $title, $text, $f) }; return }
     $key = ""
     if ($ts) { $key = Get-HistKey $ts $kind $title }
@@ -109,19 +109,20 @@ function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = 
     if ($quiet) { $q = "quiet" }
     $fr = ""
     if ($friend) { $fr = "1" }
-    Send-Osc "/wrist/notify" @($kind, $title, $text, $ts, $world, $key, $q, $worldId, $fr)
+    Send-Osc "/wrist/notify" @($kind, $title, $text, $ts, $world, $key, $q, $worldId, $fr, ($friendNames -join "`t"))
     if ($quiet) { Log "履歴だけ送信: [$kind] $title" } else { Log "送信: [$kind] $title / $text" }
 }
 
 # ---------------------------------------------------------------- フレンド（0.4.0）
 # VRChat のフレンド一覧（人の ID だけ）を friends.json に置いておき、参加・退出した人がフレンドかを見る。
-# フレンドはめったに変わらないので、取り直すのは friends_refresh_days 日ごとと、知らない人が参加したとき（1 時間に 1 回まで）だけ。
+# friends.json が friends_refresh_minutes 分（既定 60）より古くなったときだけ取り直す（失敗したときも 1 時間はあける）。
 # 取り直しは裏（別の runspace）でやるので、通知は止まらない。キーは使うときだけ読み、表示も保存もしない。
 $script:friendIds = New-Object 'System.Collections.Generic.HashSet[string]'
 $script:friendsAt = [datetime]::MinValue     # friends.json を取った時刻
 $script:friendsTry = [datetime]::MinValue    # 最後に取り直そうとした時刻
 $script:friendsJob = $null
 $script:friendsKeyBad = $false               # キーが無い・効かない（次に起動しなおすまで、自分からは取り直さない）
+$script:friendsState = "none"                # Frame 側に知らせる: ok / nokey / bad / none / off
 $script:unknownJoins = New-Object System.Collections.Generic.List[object]   # 取り直したあとで、フレンドだったら履歴に印を付け直す
 
 function Load-Friends {
@@ -216,6 +217,7 @@ function Poll-FriendsRefresh {
         foreach ($id in $r.ids) { [void]$script:friendIds.Add($id) }
         $script:friendsAt = Get-Date
         try { Save-Friends @($r.ids) } catch { Log "friends.json を書けませんでした: $($_.Exception.Message)" }
+        $script:friendsState = "ok"
         Log "フレンド一覧を取り直しました: $($r.ids.Count) 人（キーは $($r.where) から）"
         # 取り直す前に参加・退出した人のうち、フレンドだった人は履歴に印を付け直す（同じ鍵なので Frame 側で書き足される）
         foreach ($u in $script:unknownJoins) {
@@ -227,8 +229,8 @@ function Poll-FriendsRefresh {
     } else {
         $code = if ($r) { $r.code } else { "error" }
         switch ($code) {
-            "nokey" { $script:friendsKeyBad = $true; Log "VRCHAT_AUTH_KEY が見つからないので、フレンドの色分けはしません（今までどおり動きます）" }
-            "401"   { $script:friendsKeyBad = $true; Log "VRCHAT_AUTH_KEY が効きません（401）。キーを新しくして起動しなおすまで、今ある一覧を使います" }
+            "nokey" { $script:friendsKeyBad = $true; $script:friendsState = "nokey"; Log "VRCHAT_AUTH_KEY が見つからないので、フレンドの色分けはしません（今までどおり動きます）" }
+            "401"   { $script:friendsKeyBad = $true; $script:friendsState = "bad"; Log "VRCHAT_AUTH_KEY が効きません（401）。キーを新しくして起動しなおすまで、今ある一覧を使います" }
             default { Log "フレンド一覧を取れませんでした（$code）。今ある一覧を使い、あとでまた試します" }
         }
     }
@@ -244,24 +246,22 @@ function Start-FriendsRefreshNow {
     exit 0
 }
 
-# 定期の取り直し（friends_refresh_days ごと）。失敗したときも 1 時間はあける
+# 定期の取り直し（friends.json が friends_refresh_minutes 分より古いとき）。失敗したときも 1 時間はあける
 function Check-FriendsDue {
     if (-not $cfg.friends -or $script:friendsKeyBad -or $script:friendsJob) { return }
     $now = Get-Date
-    if (($now - $script:friendsAt).TotalDays -ge [double]$cfg.friends_refresh_days -and ($now - $script:friendsTry).TotalMinutes -ge 60) {
-        $why = if ($script:friendsAt -eq [datetime]::MinValue) { "初めて" } else { "前回から $([int]$cfg.friends_refresh_days) 日以上" }
+    if (($now - $script:friendsAt).TotalMinutes -ge [double]$cfg.friends_refresh_minutes -and ($now - $script:friendsTry).TotalMinutes -ge 60) {
+        $why = if ($script:friendsAt -eq [datetime]::MinValue) { "初めて" } else { "前回から $([int]$cfg.friends_refresh_minutes) 分以上" }
         Start-FriendsRefresh $why
     }
 }
 
-# 参加・退出した人がフレンド一覧に無いとき。新しいフレンドかもしれないので、間隔をあけて取り直す
+# 一覧に無い人を覚えておき、次に取り直したときにフレンドだったら履歴に印を付け直す（API は呼ばない）
 function Note-Unknown([string]$uid, [string]$ts, [string]$kind, [string]$name) {
     if (-not $cfg.friends -or -not $uid -or $DryRun -or $Replay) { return }
     if ($script:unknownJoins.Count -lt 200) {
         $script:unknownJoins.Add(@{ uid = $uid; ts = $ts; kind = $kind; name = $name; world = $script:world; wid = $script:worldId })
     }
-    if ($kind -ne "join" -or $script:friendsKeyBad) { return }
-    if (((Get-Date) - $script:friendsTry).TotalMinutes -ge [double]$cfg.friends_unknown_refresh_minutes) { Start-FriendsRefresh "知らない人が参加" }
 }
 
 # ---------------------------------------------------------------- 参加・退出をまとめる
@@ -281,12 +281,15 @@ function Flush-Pending([datetime]$now, [switch]$all) {
         if (-not $all -and ($now - $b.last).TotalSeconds -lt [double]$cfg.batch_seconds) { continue }
         $script:pending.Remove($k)
         $verb = if ($b.kind -eq "join") { "参加" } else { "退出" }
-        if ($b.names.Count -le 2) { foreach ($n in $b.names) { Send-Toast $b.kind $n.name "が$($verb)しました" -friend:$n.friend } }
+        $fnames = @($b.names | Where-Object { $_.friend } | ForEach-Object { $_.name })
+        if ($b.names.Count -le 2) {
+            foreach ($n in $b.names) { $fn = @(); if ($n.friend) { $fn = @($n.name) }; Send-Toast $b.kind $n.name "が$($verb)しました" -friend:$n.friend -friendNames $fn }
+        }
         else {
             # まとめカードの先頭にはフレンドを出す（いなければ最初の人）
             $first = $b.names | Where-Object { $_.friend } | Select-Object -First 1
             if (-not $first) { $first = $b.names[0] }
-            Send-Toast $b.kind ("{0} さんほか {1} 人" -f $first.name, ($b.names.Count - 1)) "が$verb" -friend:$first.friend
+            Send-Toast $b.kind ("{0} さんほか {1} 人" -f $first.name, ($b.names.Count - 1)) "が$verb" -friend:$first.friend -friendNames $fnames
         }
     }
 }
@@ -406,9 +409,11 @@ function Get-LogState {
 $script:lastBeat = [datetime]::MinValue
 $script:lastState = ""
 function Send-Heartbeat([string]$state, [switch]$force) {
-    if (-not $force -and $state -eq $script:lastState -and ((Get-Date) - $script:lastBeat).TotalSeconds -lt 30) { return }
-    $script:lastBeat = Get-Date; $script:lastState = $state
-    try { Send-Osc "/wrist/heartbeat" @($Version, $state) } catch { Log "送信エラー: $($_.Exception.Message)" }
+    $key2 = "$state|$($script:friendsState)"
+    if (-not $force -and $key2 -eq $script:lastState -and ((Get-Date) - $script:lastBeat).TotalSeconds -lt 30) { return }
+    $script:lastBeat = Get-Date; $script:lastState = $key2
+    $fs = if (-not $cfg.friends) { "off" } elseif ($script:friendsState -eq "none" -and $script:friendIds.Count) { "ok" } else { $script:friendsState }
+    try { Send-Osc "/wrist/heartbeat" @($Version, $state, $fs) } catch { Log "送信エラー: $($_.Exception.Message)" }
 }
 
 function Warn-IfErrorsOnly {

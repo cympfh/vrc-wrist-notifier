@@ -16,7 +16,10 @@ struct WatchStatus {
     enum Watcher { Off, Old, On } watcher = Off;   // Old: 0.3.0 より前の Windows 側（通知は届くが、様子は知らせてこない）
     std::string version;
     std::string log;   // VRChat のログ出力: full / errors / unknown（まだ出ていない）/ nolog（VRChat のログが無い）
-    bool operator==(const WatchStatus& o) const { return watcher == o.watcher && version == o.version && log == o.log; }
+    std::string friends;   // フレンド一覧（0.4.1 から）: ok / nokey / bad / none（まだ無い）/ off。空なら古い Windows 側
+    bool operator==(const WatchStatus& o) const {
+        return watcher == o.watcher && version == o.version && log == o.log && friends == o.friends;
+    }
 };
 
 class HistoryPanel {
@@ -24,6 +27,10 @@ public:
     static constexpr int kW = 1200, kH = 800;
     static constexpr int kThumb = 256;
     enum Filter { All = 0, JoinOnly = 1, LeaveOnly = 2 };
+    // 参加・退出の通知カードを出す相手（履歴には関係なく全員残る）
+    enum Notify { NotifyAll = 0, NotifyFriends = 1, NotifyOff = 2 };
+    static const char* notify_name(Notify n) { return n == NotifyFriends ? "friends" : n == NotifyOff ? "off" : "all"; }
+    static Notify notify_from(const std::string& v) { return v == "friends" ? NotifyFriends : v == "off" ? NotifyOff : NotifyAll; }
 
     explicit HistoryPanel(std::string font) : font_(std::move(font)) {}
 
@@ -60,6 +67,7 @@ public:
         bool changed = false;
         if (pressed_ >= 0 && h == pressed_) {
             if (h <= LeaveOnly) { filter_ = Filter(h); scroll_ = 0; }
+            else if (h >= kSeg0 && h < kSeg0 + 3 && Notify(h - kSeg0) != notify_) { notify_ = Notify(h - kSeg0); notify_changed_ = true; }
             else if (h == kTopButton) scroll_ = 0;
             changed = true;
         }
@@ -74,6 +82,10 @@ public:
     }
     bool scroll(double ydelta) { return set_scroll(scroll_ - ydelta * 120); }   // 上へ倒すと上へ
     void set_filter(Filter f) { filter_ = f; }
+    void set_notify(Notify n) { notify_ = n; }
+    Notify notify() const { return notify_; }
+    // パネルで選び直されたら true（1 回だけ）。呼んだ側が設定ファイルに書く
+    bool take_notify_change() { bool c = notify_changed_; notify_changed_ = false; return c; }
     // 変わったら true（描き直しが要る）
     bool set_status(const WatchStatus& st) {
         if (st == status_) return false;
@@ -124,6 +136,7 @@ public:
         cairo_rectangle(cr, 0, kListTop - 2, kW, 2);
         cairo_fill(cr);
         draw::text(cr, font_, "入退室の履歴", "Bold", 36, 36, 46, 0, {1, 1, 1});
+        draw_notify_bar(cr);
         int joins = 0, leaves = 0;
         for (auto& e : events) { joins += e.kind == "join"; leaves += e.kind == "leave"; }
         draw::text(cr, font_, "参加 " + std::to_string(joins) + " 件 ・ 退出 " + std::to_string(leaves) + " 件", "Regular", 22,
@@ -164,8 +177,11 @@ public:
     }
 
 private:
-    static constexpr int kListTop = 124;
+    static constexpr int kBarTop = 116, kBarH = 76;   // 「通知する人」の帯
+    static constexpr int kListTop = kBarTop + kBarH + 4;
     static constexpr int kTopButton = 3;
+    static constexpr int kSeg0 = 4;                     // 全員 / フレンドのみ / オフ（4, 5, 6）
+    static constexpr int kSegX = 196, kSegW = 170, kSegH = 52;
 
     struct Row {
         enum Type { Day, World, Event } type;
@@ -176,10 +192,11 @@ private:
     struct Rect { double x, y, w, h; };
     Rect button_rect(int i) const {
         if (i == kTopButton) return {kW - 180 - 3 * 160 - 20, 30, 170, 64};
+        if (i >= kSeg0) return {double(kSegX + (i - kSeg0) * kSegW), double(kBarTop + (kBarH - kSegH) / 2), double(kSegW), double(kSegH)};
         return {double(kW - 36 - (3 - i) * 160 + 10), 30, 150, 64};
     }
     int hit(double x, double y) const {
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < kSeg0 + 3; i++) {
             if (i == kTopButton && scroll_ <= 1) continue;
             Rect r = button_rect(i);
             if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return i;
@@ -194,6 +211,44 @@ private:
         draw::rounded(cr, r.x, r.y, r.w, r.h, 32);
         cairo_fill(cr);
         draw::text(cr, font_, label, "Bold", 26, r.x + r.w / 2, r.y + r.h / 2, 0, {1, 1, 1}, draw::Center);
+    }
+
+    // 「通知」: 角丸の溝の中に 3 つ並べ、選んだものだけ色の付いたつまみにする
+    void draw_notify_bar(cairo_t* cr) {
+        double cy = kBarTop + kBarH / 2.0;
+        draw::text(cr, font_, "通知", "Bold", 26, 36, cy, 0, {0.85, 0.87, 0.9});
+        draw::text(cr, font_, "参加・退出", "Regular", 18, 36 + 62, cy + 2, 0, {0.6, 0.63, 0.68});
+        Rect a = button_rect(kSeg0);
+        cairo_set_source_rgba(cr, 1, 1, 1, 0.07);
+        draw::rounded(cr, a.x - 5, a.y - 5, 3 * kSegW + 10, kSegH + 10, (kSegH + 10) / 2.0);
+        cairo_fill(cr);
+        static const char* labels[] = {"全員", "フレンドのみ", "オフ"};
+        static const draw::Rgb on[] = {{0.30, 0.55, 0.95}, {0.85, 0.66, 0.12}, {0.45, 0.47, 0.53}};
+        for (int i = 0; i < 3; i++) {
+            Rect r = button_rect(kSeg0 + i);
+            bool sel = notify_ == i, hov = hover_ == kSeg0 + i, prs = pressed_ == kSeg0 + i;
+            if (sel) cairo_set_source_rgb(cr, on[i].r, on[i].g, on[i].b);
+            else cairo_set_source_rgba(cr, 1, 1, 1, prs ? 0.22 : hov ? 0.12 : 0.0);
+            draw::rounded(cr, r.x + 2, r.y, r.w - 4, r.h, r.h / 2);
+            cairo_fill(cr);
+            draw::text(cr, font_, labels[i], "Bold", 22, r.x + r.w / 2, r.y + r.h / 2, 0,
+                       sel ? draw::Rgb{1, 1, 1} : draw::Rgb{0.70, 0.72, 0.77}, draw::Center);
+        }
+        // 右側: 補足（フレンドがわからないときは注意を目立たせる）
+        double hx = kSegX + 3 * kSegW + 28;
+        std::string note = "履歴には全員残ります";
+        draw::Rgb nc{0.6, 0.63, 0.68};
+        if (notify_ == NotifyFriends) {
+            const std::string& f = status_.friends;
+            if (status_.watcher != WatchStatus::On) note = "Windows 側が動くとフレンドがわかります";
+            else if (f == "nokey") note = "⚠ VRCHAT_AUTH_KEY が無いので、フレンドがわかりません";
+            else if (f == "bad") note = "⚠ VRCHAT_AUTH_KEY が効きません（作り直してください）";
+            else if (f == "off") note = "⚠ Windows 側でフレンドの判定がオフです";
+            else if (f == "none") note = "フレンド一覧を取りに行っています…";
+            else if (f.empty()) note = "⚠ Windows 側を 0.4.1 以降にするとフレンドがわかります";
+            if (note.rfind("⚠", 0) == 0) nc = {1.0, 0.72, 0.25};
+        } else if (notify_ == NotifyOff) note = "参加・退出のカードは出ません（履歴には残ります）";
+        draw::text(cr, font_, note, "Regular", 20, hx, cy, kW - int(hx) - 30, nc);
     }
 
     static int row_h(const Row& r) { return r.type == Row::Day ? 70 : r.type == Row::World ? 72 : 60; }
@@ -292,7 +347,8 @@ private:
 
     // 履歴がまだ無いとき: 準備の 2 つが済んでいるかを、それぞれ 1 行で
     void draw_empty(cairo_t* cr) {
-        draw::text(cr, font_, "まだ履歴がありません", "Bold", 34, kW / 2.0, 250, 0, {0.85, 0.87, 0.9}, draw::Center);
+        const double dy = kListTop - 124;   // 帯が増えた分だけ下げる
+        draw::text(cr, font_, "まだ履歴がありません", "Bold", 34, kW / 2.0, 250 + dy, 0, {0.85, 0.87, 0.9}, draw::Center);
         struct Item { std::string label, state, hint; int level; };   // level: 0 = 済み、1 = 要対応、2 = まだ確認できない
         std::vector<Item> items;
         const WatchStatus& st = status_;
@@ -314,7 +370,7 @@ private:
         else
             items.push_back({dl, "まだ確認できません", "VRChat のログがまだ出ていません。少し待つと確認します", 2});
 
-        double y = 340;
+        double y = 340 + dy;
         for (auto& it : items) {
             draw::Rgb c = it.level == 0 ? draw::Rgb{0.35, 0.85, 0.50} : it.level == 1 ? draw::Rgb{1.0, 0.72, 0.25} : draw::Rgb{0.62, 0.65, 0.70};
             cairo_set_source_rgba(cr, 1, 1, 1, 0.05);
@@ -344,6 +400,8 @@ private:
     std::vector<Row> rows_;
     WatchStatus status_;
     Filter filter_ = All;
+    Notify notify_ = NotifyAll;
+    bool notify_changed_ = false;
     double scroll_ = 0, content_h_ = 0;
     int hover_ = -1, pressed_ = -1;
     bool dragging_ = false, drag_moved_ = false;
