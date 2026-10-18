@@ -2,7 +2,7 @@
 # vrc-wrist-notifier (Windows side) installer. User space only, no admin, no autostart.
 #   irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/install.ps1 | iex
 # Uninstall (moves files aside; config is kept):
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/install.ps1))) -Uninstall
+#   irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/uninstall.ps1 | iex
 param([switch]$Uninstall)
 $ErrorActionPreference = "Stop"
 $repo = "cympfh/vrc-wrist-notifier"

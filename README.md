@@ -68,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/fram
 Windows:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/install.ps1))) -Uninstall
+irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/uninstall.ps1 | iex
 ```
 
 外したファイルは消さずに `~/.local/share/vrc-wrist-notifier-uninstalled/`（Windows は `%LOCALAPPDATA%\vrc-wrist-notifier-uninstalled\`）へ移します。設定ファイルと履歴は残ります。
