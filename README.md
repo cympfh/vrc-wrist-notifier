@@ -10,6 +10,8 @@ Steam Frame の視界に小さなカードを数秒だけ出します。メニ�
 
 ![入退室の履歴](docs/history.png)
 
+VRChat の auth クッキーを環境変数 `VRCHAT_AUTH_KEY` に入れておくと、**フレンドの名前が黄色** になります（一覧は数日に 1 回だけ取りに行きます。無くても、ほかは今までどおり使えます）。
+
 VRChat を動かす Windows PC と Steam Frame の両方に入れます（同じ家の LAN の中だけで通信します）。
 
 ## インストール
