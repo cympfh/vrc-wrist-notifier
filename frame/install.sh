@@ -75,7 +75,13 @@ if [[ "$(uname -m)" == aarch64 && -z "${VRC_WRIST_BUILD:-}" ]]; then
         have="$(sha256sum "$bin" | cut -d' ' -f1)"
         if [[ -n "$want" && "$want" == "$have" ]]; then
             chmod 755 "$bin"
-            if "$bin" --self-test >/dev/null 2>&1; then got="ビルド済み（GitHub Releases、sha256 確認済み）"; fi
+            want_ver="$(sed -n 's/.*kVersion = "\([^"]*\)".*/\1/p' "$src/frame/wrist-toast.cpp")"
+            have_ver="$("$bin" --version 2>/dev/null | awk '{print $2}')"
+            if [[ "$want_ver" != "$have_ver" ]]; then
+                echo "ビルド済みファイルの版（$have_ver）がソース（$want_ver）と違うので使いません。"
+            elif "$bin" --self-test >/dev/null 2>&1; then
+                got="ビルド済み（GitHub Releases、sha256 確認済み）"
+            fi
         else
             echo "ビルド済みファイルの sha256 が合わないので使いません。"
         fi
@@ -107,6 +113,6 @@ cat <<MSG
 vrc-wrist-notifier（Frame 側）を入れました。本体: $got
   オンにする:  systemctl --user enable --now $name
   オフにする:  systemctl --user disable --now $name
-  表示テスト:  ~/.local/opt/$name/wrist-toast --dump-png /tmp/toast.png   （SteamVR なしで見た目を PNG に）
+  履歴:        動いているあいだ、SteamVR のダッシュボードの下の並びに「入退室の履歴」が出ます
   設定:        $conf_dir/config.ini
 MSG
