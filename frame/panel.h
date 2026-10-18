@@ -187,6 +187,7 @@ private:
         enum Type { Day, World, Event } type;
         std::string time, text, kind, sub;   // sub: ワールドの見出しの右側
         bool fr = false;                     // フレンドなら名前を黄色に
+        bool me = false;                     // 自分なら水色に
     };
 
     struct Rect { double x, y, w, h; };
@@ -314,7 +315,7 @@ private:
                 if ((filter_ == JoinOnly && e.kind != "join") || (filter_ == LeaveOnly && e.kind != "leave")) continue;
                 std::string d = e.t.substr(0, 10);
                 if (d != last_day) { rows_.push_back({Row::Day, "", day_label(d), "", ""}); last_day = d; }
-                rows_.push_back({Row::Event, hm(e.t), e.name, e.kind, "", e.fr});
+                rows_.push_back({Row::Event, hm(e.t), e.name, e.kind, "", e.fr, e.me});
             }
         }
     }
@@ -339,7 +340,8 @@ private:
             draw::rounded(cr, 172, y + 12, 92, h - 24, 18);
             cairo_fill(cr);
             draw::text(cr, font_, join ? "参加" : "退出", "Bold", 22, 218, y + h / 2, 0, {0.07, 0.08, 0.10}, draw::Center);
-            if (r.fr) draw::text(cr, font_, r.text, "Bold", 28, 292, y + h / 2, kW - 366, draw::kFriend);
+            if (r.me) draw::text(cr, font_, r.text, "Bold", 28, 292, y + h / 2, kW - 366, draw::kSelf);
+            else if (r.fr) draw::text(cr, font_, r.text, "Bold", 28, 292, y + h / 2, kW - 366, draw::kFriend);
             else draw::text(cr, font_, r.text, "Regular", 28, 292, y + h / 2, kW - 366, {0.95, 0.96, 0.98});
         }
     }

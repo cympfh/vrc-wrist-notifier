@@ -21,6 +21,7 @@ struct HistEvent {
     std::string key;    // 重複を除くための鍵
     std::string wid;    // ワールドの ID（wrld_...、0.3.0 から。わからなければ空）
     bool fr = false;    // フレンド（0.4.0 から。Windows 側が VRChat のフレンド一覧を持っているときだけ）
+    bool me = false;    // 自分（0.4.1 から）
 };
 
 namespace hist {
@@ -75,6 +76,7 @@ inline std::string to_json(const HistEvent& e) {
                     "\",\"w\":\"" + json_escape(e.world) + "\",\"key\":\"" + json_escape(e.key) + "\"";
     if (!e.wid.empty()) o += ",\"wid\":\"" + json_escape(e.wid) + "\"";
     if (e.fr) o += ",\"f\":\"1\"";
+    if (e.me) o += ",\"s\":\"1\"";
     return o + "}";
 }
 
@@ -86,6 +88,7 @@ inline bool from_json(const std::string& line, HistEvent& e) {
     if (!json_get(line, "key", e.key)) e.key = e.t + "|" + e.kind + "|" + e.name;
     std::string f;
     e.fr = json_get(line, "f", f) && f == "1";
+    e.me = json_get(line, "s", f) && f == "1";
     return true;
 }
 
@@ -143,12 +146,13 @@ private:
     // b が a に無いワールドの情報を持っているか
     static bool fills_in(const HistEvent& a, const HistEvent& b) {
         return (a.world.empty() && !b.world.empty()) || (a.wid.empty() && !b.wid.empty() && (a.world.empty() || a.world == b.world)) ||
-               (!a.fr && b.fr);   // あとからフレンドだとわかった
+               (!a.fr && b.fr) || (!a.me && b.me);   // あとからフレンド・自分だとわかった
     }
     static void merge(HistEvent& a, const HistEvent& b) {
         if (a.world.empty()) a.world = b.world;
         if (a.wid.empty() && a.world == b.world) a.wid = b.wid;
         if (b.fr) a.fr = true;
+        if (b.me) a.me = true;
     }
     HistEvent* find(const std::string& key) {
         for (auto it = events_.rbegin(); it != events_.rend(); ++it)

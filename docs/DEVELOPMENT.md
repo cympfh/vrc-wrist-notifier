@@ -40,7 +40,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - キー（`auth` クッキーの値）は、Windows の環境変数 `VRCHAT_AUTH_KEY`（プロセス → ユーザー）、無ければ `wsl.exe -d <wsl_distro> --exec zsh -lic` で読みます。取り直すときだけ読み、表示・ログ・保存はしません。キーが無い・401 なら、起動しなおすまで自分からは取り直さず、今までどおり動きます
 - `/wrist/notify` の 9 個目、`/wrist/history` の 7 個目が `"1"` ならフレンド。まとめカードでは先頭にフレンドを出し、「名前 さんほか N 人」の名前の部分だけ黄色にします
 - 一覧に無い人が、次に取り直したあとでフレンドだとわかったら、同じ鍵で `/wrist/history` を送り直し、Frame 側で印を書き足します。履歴の 1 行には `"f":"1"` が付きます（フレンドでなければ書かない）。印は消えません
-- `-RefreshFriends` で今すぐ取り直して件数だけ表示。`--dump-png … --friend` でフレンドのカードを PNG にできます
+- `-RefreshFriends` で今すぐ取り直して件数だけ表示。`--dump-png … --friend`（`--self`）でフレンド（自分）のカードを PNG にできます
 
 ## 通知する人（0.4.1）
 
@@ -49,6 +49,12 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - `/wrist/notify` の 10 個目に、そのカードに入っているフレンドの名前（タブ区切り）が付きます。「フレンドのみ」では、まとめカードもフレンドだけで数えなおします（2 人までは 1 人ずつ、3 人以上は「名前 さんほか N 人」）。10 個目が無い 0.4.0 の Windows 側からは 1 人のカードだけ判断します
 - `/wrist/heartbeat` の 3 個目がフレンド一覧の状態（`ok` / `nokey` / `bad` / `none` / `off`）。「フレンドのみ」でフレンドがわからないときは、帯の右に短い注意を出します
 - `--dump-history-png … --notify friends --friends-state nokey` で帯の見た目を PNG にできます
+
+## 自分の名前は水色（0.4.1）
+
+- 自分の ID は VRChat のログの `[Behaviour] User Authenticated: 名前 (usr_…)` の行から取ります（API は使いません）。フレンド一覧を取ったときの `/auth/user` の `id` も friends.json の `self_id` に残し、ログに無いときに使います
+- `/wrist/notify` の 9 個目と `/wrist/history` の 7 個目が `"self"` なら自分。`/wrist/notify` の 11 個目はそのカードに入っている自分の名前。履歴の 1 行には `"s":"1"`
+- 自分は「全員」「フレンドのみ」のどちらでも通知し（「オフ」なら出さない）、まとめカードでは先頭に出します
 
 ## 拾うログの行
 
