@@ -9,5 +9,6 @@
   "notify_world": true,
   "notify_invite": true,
   "notify_friend": true,
-  "notify_other": false
+  "notify_other": false,
+  "backfill_history": true
 }

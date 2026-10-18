@@ -6,15 +6,17 @@
 #   powershell -ExecutionPolicy Bypass -File vrc-wrist-notifier.ps1            # 見張りを始める（Ctrl+C で終了）
 #   powershell -ExecutionPolicy Bypass -File vrc-wrist-notifier.ps1 -Test      # テスト通知を 1 件送る
 #   ... -Replay <ログファイル> -DryRun                                         # 送らずに検出結果だけ表示
+#   ... -Backfill [-DryRun]                                                    # 過去のログから履歴だけ送って終わる
 [CmdletBinding()]
 param(
     [string]$Config = "",
     [switch]$Test,
     [string]$Replay = "",
+    [switch]$Backfill,
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
-$Version = "0.1.0"
+$Version = "0.2.0"
 
 # ---------------------------------------------------------------- 設定
 $defaults = [ordered]@{
@@ -28,6 +30,7 @@ $defaults = [ordered]@{
     notify_invite = $true     # invite / requestInvite
     notify_friend = $true     # friendRequest
     notify_other  = $false    # それ以外の通知
+    backfill_history = $true  # 起動したとき、今ある VRChat のログから参加・退出の履歴を Frame に送る（重複は Frame 側で除く）
 }
 if (-not $Config) { $Config = Join-Path $env:APPDATA "vrc-wrist-notifier\config.json" }
 $cfg = @{}
@@ -65,22 +68,32 @@ function Add-OscString([System.Collections.Generic.List[byte]]$buf, [string]$s) 
     for ($i = 0; $i -lt $pad; $i++) { $buf.Add(0) }
 }
 
-function Send-Toast([string]$kind, [string]$title, [string]$text) {
-    if ($DryRun) { Write-Output ("{0}`t{1}`t{2}" -f $kind, $title, $text); return }
+function Send-Osc([string]$address, [string[]]$strings) {
     if (-not $script:udp) {
         $script:endpoint = Get-Endpoint
         $script:udp = New-Object System.Net.Sockets.UdpClient([System.Net.Sockets.AddressFamily]::InterNetwork)
         Log "送り先: $($script:endpoint)"
     }
     $buf = New-Object System.Collections.Generic.List[byte]
-    Add-OscString $buf "/wrist/notify"
-    Add-OscString $buf ",sss"
-    Add-OscString $buf $kind
-    Add-OscString $buf $title
-    Add-OscString $buf $text
+    Add-OscString $buf $address
+    Add-OscString $buf ("," + ("s" * $strings.Count))
+    foreach ($x in $strings) { Add-OscString $buf $x }
     $bytes = $buf.ToArray()
     [void]$script:udp.Send($bytes, $bytes.Length, $script:endpoint)
-    Log "送信: [$kind] $title / $text"
+}
+
+# 履歴の重複を除く鍵（Frame 側で同じ鍵は 1 回だけ記録する）
+function Get-HistKey([string]$ts, [string]$kind, [string]$name) { "$ts|$kind|$name" }
+
+# 通知を送る。$ts（yyyy-MM-dd HH:mm:ss）と $world を付けると Frame 側の履歴にも残る。$quiet なら履歴だけ
+function Send-Toast([string]$kind, [string]$title, [string]$text, [string]$ts = "", [string]$world = "", [switch]$quiet) {
+    if ($DryRun) { if (-not $quiet) { Write-Output ("{0}`t{1}`t{2}" -f $kind, $title, $text) }; return }
+    $key = ""
+    if ($ts) { $key = Get-HistKey $ts $kind $title }
+    $q = ""
+    if ($quiet) { $q = "quiet" }
+    Send-Osc "/wrist/notify" @($kind, $title, $text, $ts, $world, $key, $q)
+    if ($quiet) { Log "履歴だけ送信: [$kind] $title" } else { Log "送信: [$kind] $title / $text" }
 }
 
 # ---------------------------------------------------------------- ログの解析
@@ -93,6 +106,7 @@ $reNotif  = [regex]'^\[API\] Received Notification: <Notification from username:
 $reWorldN = [regex]'worldName=([^,}]+)'
 
 $script:enteredAt = [datetime]::MinValue
+$script:world = ""
 $script:seenNotif = @{}
 $script:levels = @{}
 
@@ -104,22 +118,25 @@ function Handle-Line([string]$line) {
     $body = $m.Groups[3].Value.TrimEnd()
     $ts = [datetime]::MinValue
     [void][datetime]::TryParseExact($m.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null, 0, [ref]$ts)
+    $tss = $ts.ToString("yyyy-MM-dd HH:mm:ss")
 
     $r = $reRoom.Match($body)
     if ($r.Success) {
         $script:enteredAt = $ts
-        if ($cfg.notify_world) { Send-Toast "world" $r.Groups[1].Value "ワールドに入りました" }
+        $script:world = $r.Groups[1].Value
+        Send-Toast "world" $script:world "ワールドに入りました" $tss $script:world -quiet:(-not $cfg.notify_world)
         return
     }
     $r = $reJoin.Match($body)
     if ($r.Success) {
+        # ワールドに入った直後は元からいた人なので通知しない（履歴には残す）
         $quiet = ($ts - $script:enteredAt).TotalSeconds -lt [double]$cfg.quiet_seconds
-        if ($cfg.notify_join -and -not $quiet) { Send-Toast "join" $r.Groups[1].Value "が参加しました" }
+        Send-Toast "join" $r.Groups[1].Value "が参加しました" $tss $script:world -quiet:($quiet -or -not $cfg.notify_join)
         return
     }
     $r = $reLeft.Match($body)
     if ($r.Success) {
-        if ($cfg.notify_leave) { Send-Toast "leave" $r.Groups[1].Value "が退出しました" }
+        Send-Toast "leave" $r.Groups[1].Value "が退出しました" $tss $script:world -quiet:(-not $cfg.notify_leave)
         return
     }
     $r = $reNotif.Match($body)
@@ -153,9 +170,48 @@ function Warn-IfErrorsOnly {
     }
 }
 
+# 今ある VRChat のログ（古い順）から、参加・退出・ワールドを履歴として送る。通知は出さない
+function Send-Backfill {
+    $files = @(Get-ChildItem -LiteralPath $cfg.log_dir -Filter "output_log_*.txt" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)
+    $count = 0; $world = ""
+    foreach ($f in $files) {
+        $fs = New-Object System.IO.FileStream($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+        try {
+            while ($null -ne ($line = $sr.ReadLine())) {
+                $m = $reLine.Match($line)
+                if (-not $m.Success) { continue }
+                $body = $m.Groups[3].Value.TrimEnd()
+                $kind = $null; $name = $null
+                $r = $reRoom.Match($body)
+                if ($r.Success) { $kind = "world"; $name = $r.Groups[1].Value; $world = $name }
+                else {
+                    $r = $reJoin.Match($body)
+                    if ($r.Success) { $kind = "join"; $name = $r.Groups[1].Value }
+                    else { $r = $reLeft.Match($body); if ($r.Success) { $kind = "leave"; $name = $r.Groups[1].Value } }
+                }
+                if (-not $kind) { continue }
+                $ts = [datetime]::ParseExact($m.Groups[1].Value, "yyyy.MM.dd HH:mm:ss", $null).ToString("yyyy-MM-dd HH:mm:ss")
+                if ($DryRun) { Write-Output ("history`t{0}`t{1}`t{2}`t{3}" -f $ts, $kind, $name, $world) }
+                else {
+                    Send-Osc "/wrist/history" @($ts, $kind, $name, $world, (Get-HistKey $ts $kind $name))
+                    if ((++$count % 50) -eq 0) { Start-Sleep -Milliseconds 20 }   # 一度に送りすぎない
+                }
+            }
+        } finally { $sr.Dispose(); $fs.Dispose() }
+    }
+    if (-not $DryRun) { Log "過去のログから履歴を $count 件送りました（$($files.Count) ファイル。重複は Frame 側で除きます）" }
+}
+
 # ---------------------------------------------------------------- 入口
 if ($Test) {
     Send-Toast "join" "テスト" "vrc-wrist-notifier から届きました"
+    exit 0
+}
+
+if ($Backfill) {
+    Send-Backfill
     exit 0
 }
 
@@ -173,6 +229,9 @@ function Get-NewestLog {
 }
 
 Log "vrc-wrist-notifier $Version を開始（ログの場所: $($cfg.log_dir)、Ctrl+C で終了）"
+if ($cfg.backfill_history) {
+    try { Send-Backfill } catch { Log "履歴の読み込みに失敗しました: $($_.Exception.Message)" }
+}
 $current = $null; $fs = $null; $reader = $null; $partial = ""; $lastCheck = [datetime]::MinValue; $warned = $false
 try {
     while ($true) {
