@@ -177,11 +177,11 @@ public:
     }
 
 private:
-    static constexpr int kBarTop = 116, kBarH = 76;   // 「通知する人」の帯
+    static constexpr int kBarTop = 112, kBarH = 116;  // 「通知設定」の帯（上の段に切り替え、下の段に補足）
     static constexpr int kListTop = kBarTop + kBarH + 4;
     static constexpr int kTopButton = 3;
     static constexpr int kSeg0 = 4;                     // 全員 / フレンドのみ / オフ（4, 5, 6）
-    static constexpr int kSegX = 254, kSegW = 186, kSegH = 52;
+    static constexpr int kSegX = 190, kSegW = 200, kSegH = 52;
 
     struct Row {
         enum Type { Day, World, Event } type;
@@ -193,7 +193,7 @@ private:
     struct Rect { double x, y, w, h; };
     Rect button_rect(int i) const {
         if (i == kTopButton) return {kW - 180 - 3 * 160 - 20, 30, 170, 64};
-        if (i >= kSeg0) return {double(kSegX + (i - kSeg0) * kSegW), double(kBarTop + (kBarH - kSegH) / 2), double(kSegW), double(kSegH)};
+        if (i >= kSeg0) return {double(kSegX + (i - kSeg0) * kSegW), double(kBarTop + 12), double(kSegW), double(kSegH)};
         return {double(kW - 36 - (3 - i) * 160 + 10), 30, 150, 64};
     }
     int hit(double x, double y) const {
@@ -216,8 +216,8 @@ private:
 
     // 「通知」: 角丸の溝の中に 3 つ並べ、選んだものだけ色の付いたつまみにする
     void draw_notify_bar(cairo_t* cr) {
-        double cy = kBarTop + kBarH / 2.0;
-        draw::text(cr, font_, "参加・退出の通知", "Bold", 24, 36, cy, 0, {0.85, 0.87, 0.9});
+        double cy = kBarTop + 12 + kSegH / 2.0;
+        draw::text(cr, font_, "通知設定", "Bold", 26, 36, cy, 0, {0.85, 0.87, 0.9});
         Rect a = button_rect(kSeg0);
         cairo_set_source_rgba(cr, 1, 1, 1, 0.07);
         draw::rounded(cr, a.x - 5, a.y - 5, 3 * kSegW + 10, kSegH + 10, (kSegH + 10) / 2.0);
@@ -235,20 +235,20 @@ private:
                        sel ? draw::Rgb{1, 1, 1} : draw::Rgb{0.70, 0.72, 0.77}, draw::Center);
         }
         // 右側: 補足（フレンドがわからないときは注意を目立たせる）
-        double hx = kSegX + 3 * kSegW + 22;
+        double hx = kSegX + 6, ny = kBarTop + 12 + kSegH + 28;   // 下の段
         std::string note = "履歴には全員残ります";
         draw::Rgb nc{0.6, 0.63, 0.68};
         if (notify_ == NotifyFriends) {
             const std::string& f = status_.friends;
             if (status_.watcher != WatchStatus::On) note = "Windows 側の見張りを待っています";
-            else if (f == "nokey") note = "⚠ キーが無くフレンド不明";
-            else if (f == "bad") note = "⚠ キーが切れています";
-            else if (f == "off") note = "⚠ Windows 側で判定がオフ";
-            else if (f == "none") note = "フレンド一覧を取得中…";
-            else if (f.empty()) note = "⚠ Windows 側を 0.4.1 以降に";
+            else if (f == "nokey") note = "⚠ VRCHAT_AUTH_KEY が無いので、フレンドがわかりません（履歴には全員残ります）";
+            else if (f == "bad") note = "⚠ VRCHAT_AUTH_KEY が切れています。作り直してください（履歴には全員残ります）";
+            else if (f == "off") note = "⚠ Windows 側でフレンドの判定がオフです（履歴には全員残ります）";
+            else if (f == "none") note = "フレンド一覧を取得中です（履歴には全員残ります）";
+            else if (f.empty()) note = "⚠ Windows 側を 0.4.1 以降にするとフレンドがわかります";
             if (note.rfind("⚠", 0) == 0) nc = {1.0, 0.72, 0.25};
-        } else if (notify_ == NotifyOff) note = "カードは出ません（履歴には残ります）";
-        draw::text(cr, font_, note, "Regular", 20, hx, cy, kW - int(hx) - 24, nc);
+        } else if (notify_ == NotifyOff) note = "参加・退出のカードは出ません（履歴には全員残ります）";
+        draw::text(cr, font_, note, "Regular", 20, hx, ny, kW - int(hx) - 30, nc);
     }
 
     static int row_h(const Row& r) { return r.type == Row::Day ? 70 : r.type == Row::World ? 72 : 60; }

@@ -34,7 +34,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.4.1";
+static const char* kVersion = "0.4.2";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
