@@ -33,7 +33,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.2.0";
+static const char* kVersion = "0.2.1";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -187,21 +187,46 @@ struct Toast {
     std::string kind, title, text;
 };
 
+// 種類は「基本.詳細」でもよい（例: alert.temp、care.break）。色は基本で、アイコンは詳細で決める。
+// VRChat 以外の通知（frame-care など）: alert / urgent = 赤、warn = 琥珀、care / info = 青緑
+static std::string kind_base(const std::string& kind) { return kind.substr(0, kind.find('.')); }
+static std::string kind_sub(const std::string& kind) {
+    size_t d = kind.find('.');
+    return d == std::string::npos ? "" : kind.substr(d + 1);
+}
+static bool is_alert(const std::string& kind) {
+    std::string b = kind_base(kind);
+    return b == "alert" || b == "urgent";
+}
+
 static const char* kind_icon(const std::string& kind) {
     if (kind == "join") return "➕";
     if (kind == "leave") return "➖";
     if (kind == "world") return "🌐";
     if (kind == "invite" || kind == "requestInvite") return "✉";
     if (kind == "friendRequest") return "★";
+    std::string sub = kind_sub(kind), base = kind_base(kind);
+    if (sub == "temp") return "🌡";
+    if (sub == "battery") return "🔋";
+    if (sub == "charge") return "⚡";
+    if (sub == "break") return "☕";
+    if (sub == "water") return "💧";
+    if (is_alert(kind)) return "!";
+    if (base == "warn") return "⚠";
+    if (base == "care" || base == "info") return "♥";
     return "●";
 }
 
 static void kind_color(const std::string& kind, double& r, double& g, double& b) {
+    std::string base = kind_base(kind);
     r = 0.35; g = 0.55; b = 0.95;                                  // その他: 青
     if (kind == "join") { r = 0.30; g = 0.80; b = 0.45; }          // 緑
     else if (kind == "leave") { r = 0.60; g = 0.60; b = 0.65; }    // 灰
     else if (kind == "world") { r = 0.30; g = 0.70; b = 0.95; }
     else if (kind == "invite" || kind == "requestInvite" || kind == "friendRequest") { r = 0.98; g = 0.70; b = 0.25; }
+    else if (is_alert(kind)) { r = 0.93; g = 0.27; b = 0.27; }    // 赤
+    else if (base == "warn") { r = 1.00; g = 0.58; b = 0.10; }    // 琥珀
+    else if (base == "care" || base == "info") { r = 0.18; g = 0.76; b = 0.70; }   // 青緑
 }
 
 static const int kW = 640, kH = 160;
@@ -210,13 +235,15 @@ static const int kW = 640, kH = 160;
 static cairo_surface_t* render_toast_surface(const Toast& t, const std::string& font) {
     cairo_surface_t* s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, kW, kH);
     cairo_t* cr = cairo_create(s);
+    bool alert = is_alert(t.kind);
     draw::rounded(cr, 4, 4, kW - 8, kH - 8, 28);
-    cairo_set_source_rgba(cr, 0.08, 0.09, 0.11, 0.90);
+    if (alert) cairo_set_source_rgba(cr, 0.22, 0.06, 0.07, 0.94);   // 急ぎは背景も赤み
+    else cairo_set_source_rgba(cr, 0.08, 0.09, 0.11, 0.90);
     cairo_fill_preserve(cr);
     double r, g, b;
     kind_color(t.kind, r, g, b);
     cairo_set_source_rgba(cr, r, g, b, 0.9);
-    cairo_set_line_width(cr, 4);
+    cairo_set_line_width(cr, alert ? 8 : 4);
     cairo_stroke(cr);
     cairo_arc(cr, 76, kH / 2.0, 46, 0, 2 * M_PI);
     cairo_set_source_rgba(cr, r, g, b, 0.95);
@@ -390,6 +417,16 @@ static int self_test() {
     std::string cut = clean(longjp, 31);
     check(cut.size() <= 31 + 3 && cut.substr(cut.size() - 3) == "…", "UTF-8 の途中で切らない");
 
+    double cr_, cg, cb;
+    kind_color("alert.temp", cr_, cg, cb);
+    check(cr_ > 0.9 && cg < 0.4 && std::string(kind_icon("alert.temp")) == "🌡" && is_alert("urgent"), "alert.temp は赤で温度計");
+    kind_color("warn", cr_, cg, cb);
+    check(cr_ > 0.9 && cg > 0.5 && cb < 0.2 && std::string(kind_icon("warn")) == "⚠", "warn は琥珀");
+    kind_color("care.break", cr_, cg, cb);
+    check(cg > 0.7 && cb > 0.6 && cr_ < 0.3 && std::string(kind_icon("care.break")) == "☕", "care.break は青緑でカップ");
+    kind_color("join", cr_, cg, cb);
+    check(std::string(kind_icon("join")) == "➕" && cg > 0.7 && cr_ < 0.4 && !is_alert("join"), "VRChat の種類は今までどおり");
+
     HistEvent e{"2026-01-02 21:00:00", "join", "名前 \"引用\" \\ 😀", "ワールド", "k1"}, back;
     check(hist::from_json(hist::to_json(e), back) && back.name == e.name && back.world == e.world && back.key == "k1",
           "履歴の JSON を書いて読み戻せる");
@@ -514,7 +551,7 @@ int main(int argc, char** argv) {
     std::deque<Toast> queue;
     bool showing = false, panel_dirty = true, thumb_done = false, panel_visible = false;
     unsigned panel_version = ~0u;
-    double shown_at = 0, next_vr_try = 0, window_start = 0, next_check = 0;
+    double shown_at = 0, shown_dur = 4, next_vr_try = 0, window_start = 0, next_check = 0;
     int window_count = 0;
     long received = 0, shown = 0, dropped = 0, hist_added = 0, hist_logged = 0;
     std::string current_world;
@@ -652,11 +689,11 @@ int main(int argc, char** argv) {
             }
             if (showing) {
                 double age = now - shown_at, fade = 0.4;
-                if (age >= c.duration_s) {
+                if (age >= shown_dur) {
                     vr::VROverlay()->HideOverlay(v.toast);
                     showing = false;
                 } else {
-                    double alpha = age < fade ? age / fade : (c.duration_s - age < fade ? (c.duration_s - age) / fade : 1.0);
+                    double alpha = age < fade ? age / fade : (shown_dur - age < fade ? (shown_dur - age) / fade : 1.0);
                     vr::VROverlay()->SetOverlayAlpha(v.toast, float(alpha));
                 }
             }
@@ -672,6 +709,7 @@ int main(int argc, char** argv) {
                     vr::VROverlay()->ShowOverlay(v.toast);
                     showing = true;
                     shown_at = now;
+                    shown_dur = c.duration_s * (is_alert(t.kind) ? 1.5 : 1.0);   // 急ぎは長めに出す
                     shown++;
                     logf("表示: [%s] %s", t.kind.c_str(), t.title.c_str());
                 }
