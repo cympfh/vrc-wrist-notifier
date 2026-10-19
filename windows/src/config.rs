@@ -18,7 +18,6 @@ pub struct Config {
     pub friends: bool,
     pub friends_refresh_minutes: f64,
     pub friends_file: PathBuf,
-    pub wsl_distro: String,
     /// 通知設定: all / friends / off（パネルで選ぶと書き込まれる）
     pub notify_people: String,
     /// 通知を出す秒数（急ぎの通知は 1.5 倍）
@@ -88,7 +87,6 @@ impl Config {
             friends: true,
             friends_refresh_minutes: 60.0,
             friends_file: PathBuf::new(),
-            wsl_distro: "Ubuntu".into(),
             notify_people: "all".into(),
             toast_seconds: 4.0,
             toast_distance_m: 0.8,
@@ -115,6 +113,8 @@ impl Config {
                             "history_dir" => c.history_dir = PathBuf::from(text(&v)),
                             // 0.5 までの Frame 側への送り先（もう使わない）
                             "frame_host" | "frame_port" => {}
+                            // 0.6.1 までのキーの読み先（キーは設定の窓で入れるようになった）
+                            "wsl_distro" => {}
                             "log_dir" => c.log_dir = PathBuf::from(text(&v)),
                             "batch_seconds" => c.batch_seconds = num(&v, 3.0),
                             "quiet_seconds" => c.quiet_seconds = num(&v, 10.0),
@@ -128,7 +128,6 @@ impl Config {
                             "friends" => c.friends = truthy(&v),
                             "friends_refresh_minutes" => c.friends_refresh_minutes = num(&v, 60.0),
                             "friends_file" => c.friends_file = PathBuf::from(text(&v)),
-                            "wsl_distro" => c.wsl_distro = text(&v),
                             k if k.starts_with('_') => {}
                             k => warn.push(format!("知らない設定項目 {k} は無視します")),
                         }

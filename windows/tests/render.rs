@@ -62,8 +62,8 @@ fn corner_note_only_for_problems() {
     let st = |l: &str, f: &str| PanelStatus { log: l.into(), friends: f.into() };
     assert_eq!(corner_note(&st("full", "ok")), None);
     assert_eq!(corner_note(&st("full", "off")), None);
-    assert_eq!(corner_note(&st("full", "nokey")), Some("VRCHAT_AUTH_KEY 未設定"));
-    assert_eq!(corner_note(&st("full", "bad")), Some("VRCHAT_AUTH_KEY が使えません"));
+    assert_eq!(corner_note(&st("full", "nokey")), Some(vwn::auth::PANEL_NOKEY));
+    assert_eq!(corner_note(&st("full", "bad")), Some(vwn::auth::PANEL_BAD));
     assert!(corner_note(&st("errors", "ok")).unwrap().contains("Full"));
 }
 

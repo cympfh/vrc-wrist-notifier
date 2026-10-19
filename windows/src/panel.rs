@@ -75,10 +75,8 @@ impl Default for HistoryPanel {
 
 /// 問題があるときだけ、右下の隅に小さく出す（問題が無ければ何も出さない）
 pub fn corner_note(st: &PanelStatus) -> Option<&'static str> {
-    match st.friends.as_str() {
-        "nokey" => return Some("VRCHAT_AUTH_KEY 未設定"),
-        "bad" => return Some("VRCHAT_AUTH_KEY が使えません"),
-        _ => {}
+    if let Some(m) = crate::auth::panel_problem(&st.friends) {
+        return Some(m);
     }
     if st.log == "errors" {
         return Some("VRChat のデバッグログが Full ではありません");

@@ -91,11 +91,10 @@ pub struct FetchResult {
     pub ok: bool,
     pub ids: Vec<String>,
     pub code: String,
-    pub where_: String,
     pub self_id: String,
 }
-/// (wsl_distro, User-Agent) → 結果。Windows 版では main.rs が渡す（キーを読んで GET /api/1/auth/user）
-pub type Fetcher = fn(String, String) -> FetchResult;
+/// User-Agent → 結果。Windows 版では main.rs が渡す（保存したキーを読んで GET /api/1/auth/user）
+pub type Fetcher = fn(String) -> FetchResult;
 
 struct Unknown {
     uid: String,
@@ -323,10 +322,9 @@ impl Watcher {
         }
         self.friends_try = Some(Instant::now());
         let (tx, rx) = std::sync::mpsc::channel();
-        let distro = self.cfg.wsl_distro.clone();
         let ua = format!("vrc-wrist-notifier/{} cympfh", crate::VERSION);
         std::thread::spawn(move || {
-            let _ = tx.send(fetch(distro, ua));
+            let _ = tx.send(fetch(ua));
         });
         self.friends_job = Some(rx);
         logf!("フレンド一覧を取り直しています（{why}）");
@@ -337,6 +335,13 @@ impl Watcher {
         self.cfg.friends = true;
         self.friends_key_bad = false;
         self.start_friends_refresh("手動");
+    }
+
+    /// 設定の窓でキーを消したとき: 取り直しはせず「未入力」にする（今ある一覧はそのまま使う）
+    pub fn key_cleared(&mut self) {
+        self.friends_key_bad = true;
+        self.friends_state = "nokey".into();
+        logf!("VRChat のキーを消しました");
     }
 
     /// 裏の取り直しが終わっていたら受け取る。wait なら終わるまで待つ
@@ -362,7 +367,7 @@ impl Watcher {
                 logf!("friends.json を書けませんでした: {e}");
             }
             self.friends_state = "ok".into();
-            logf!("フレンド一覧を取り直しました: {} 人（キーは {} から）", r.ids.len(), r.where_);
+            logf!("フレンド一覧を取り直しました: {} 人", r.ids.len());
             // 取り直す前に参加・退出した人のうち、フレンドだった人は履歴に印を付け直す（同じ鍵なので書き足される）
             let unknown: Vec<Unknown> =
                 std::mem::take(&mut self.unknown_joins).into_iter().filter(|u| self.friend_ids.contains(&u.uid)).collect();
@@ -374,16 +379,16 @@ impl Watcher {
                 "nokey" => {
                     self.friends_key_bad = true;
                     self.friends_state = "nokey".into();
-                    logf!("VRCHAT_AUTH_KEY が見つからないので、フレンドの色分けはしません（今までどおり動きます）");
+                    logf!("VRChat のキーが入力されていないので、フレンドの色分けはしません（トレイの「設定…」から入力できます）");
                 }
                 "401" => {
                     self.friends_key_bad = true;
                     self.friends_state = "bad".into();
-                    logf!("VRCHAT_AUTH_KEY が効きません（401）。キーを新しくして取り直すまで、今ある一覧を使います");
+                    logf!("VRChat のキーが効きません（401）。設定の窓で入れなおすまで、今ある一覧を使います");
                 }
                 code => {
                     self.friends_state = "bad".into();
-                    logf!("VRCHAT_AUTH_KEY でフレンド一覧を取れませんでした（{code}）。今ある一覧を使い、1 時間あとにまた試します");
+                    logf!("VRChat のキーでフレンド一覧を取れませんでした（{code}）。今ある一覧を使い、1 時間あとにまた試します");
                 }
             }
         }

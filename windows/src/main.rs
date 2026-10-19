@@ -21,6 +21,10 @@ use vwn::{logf, VERSION};
 #[cfg(windows)]
 mod friends_api;
 #[cfg(windows)]
+mod keystore;
+#[cfg(windows)]
+mod settings;
+#[cfg(windows)]
 mod tray;
 #[cfg(windows)]
 mod d3d;
