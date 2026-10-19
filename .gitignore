@@ -1,2 +1,3 @@
 wrist-toast
 *.o
+windows/target/
