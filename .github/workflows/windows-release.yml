@@ -40,7 +40,7 @@ jobs:
       - name: Check version matches the tag
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          want="${GITHUB_REF_NAME#v}"
+          want="${GITHUB_REF_NAME#v}"; want="${want%%-*}"   # v0.5.0-rc.1 のような試しのタグは 0.5.0 と比べる（pre-release になる）
           have="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           echo "tag $want / Cargo.toml $have"
           [ "$want" = "$have" ] || { echo "::error::タグ ($want) と windows/Cargo.toml の version ($have) が違います"; exit 1; }
