@@ -537,6 +537,9 @@ fn connect(cfg: &Config, pid: u32) -> Result<Session, String> {
 }
 
 /// VR のスレッド。見張りから届いたものを履歴と通知にし、SteamVR が動いていれば出す
+/// SteamVR につながっているか（トレイの「テスト通知」で、VR に出せないときに知らせるため）
+pub static CONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn run(cfg: Config, cfg_path: PathBuf, rx: Receiver<Out>, status: Arc<Mutex<Status>>) {
     let mut hub = Hub::new(&cfg, cfg_path);
     logf!("履歴: {}（{} 件）", hub.history.path().display(), hub.history.events().len());
@@ -613,6 +616,7 @@ pub fn run(cfg: Config, cfg_path: PathBuf, rx: Receiver<Out>, status: Arc<Mutex<
                 false
             }
         };
+        CONNECTED.store(session.is_some(), std::sync::atomic::Ordering::Relaxed);
         if dropped > 0 && session.is_none() {
             logf!("SteamVR が動いていないので表示しませんでした: {dropped} 件");
             dropped = 0;

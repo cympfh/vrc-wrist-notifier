@@ -91,11 +91,22 @@ pub struct FetchResult {
     pub ok: bool,
     pub ids: Vec<String>,
     pub code: String,
-    pub where_: String,
     pub self_id: String,
 }
-/// (wsl_distro, User-Agent) → 結果。Windows 版では main.rs が渡す（キーを読んで GET /api/1/auth/user）
-pub type Fetcher = fn(String, String) -> FetchResult;
+/// 取り直しに失敗したときの code → (状態, キーのせいか)。キーのせいなら、入れなおすまで自分からは取り直さない。
+/// オフライン・5xx・読めない応答などはキーのせいではないので、1 時間あとにまた試す
+pub fn classify_fetch(code: &str) -> (&'static str, bool) {
+    match code {
+        "nokey" => ("nokey", true),
+        "unreadable" => ("unreadable", true),
+        // 401: キーが切れた・ログアウトした。nofriends: 2 段階認証の途中など、そのキーではフレンドが見えない
+        "401" | "nofriends" => ("bad", true),
+        _ => ("neterror", false),
+    }
+}
+
+/// User-Agent → 結果。Windows 版では main.rs が渡す（保存したキーを読んで GET /api/1/auth/user）
+pub type Fetcher = fn(String) -> FetchResult;
 
 struct Unknown {
     uid: String,
@@ -145,7 +156,9 @@ pub struct Watcher {
     friend_ids: HashSet<String>,
     friends_at: Option<NaiveDateTime>,
     friends_try: Option<Instant>,
-    friends_job: Option<Receiver<FetchResult>>,
+    /// 取り直しの番号と結果の受け口。キーを保存・消したら番号を進め、前の取り直しの結果は捨てる
+    friends_job: Option<(u64, Receiver<FetchResult>)>,
+    friends_gen: u64,
     friends_key_bad: bool,
     friends_state: String,
     unknown_joins: Vec<Unknown>,
@@ -179,6 +192,7 @@ impl Watcher {
             friends_at: None,
             friends_try: None,
             friends_job: None,
+            friends_gen: 0,
             friends_key_bad: false,
             friends_state: "none".into(),
             unknown_joins: Vec::new(),
@@ -250,9 +264,9 @@ impl Watcher {
         self.send_toast(kind, title, text, "", "", false, "", false, &[], false, "");
     }
 
-    /// トレイの「テスト通知」: テスト通知を 1 件
+    /// トレイの「テスト通知」: テスト通知を 1 件（通知設定に関わらず出る）
     pub fn send_test(&mut self) {
-        self.simple_toast("join", "テスト", "vrc-wrist-notifier から届きました");
+        self.simple_toast(crate::toast::TEST_KIND, "テスト通知", "vrc-wrist-notifier から届きました");
     }
 
     // ------------------------------------------------------------ フレンド（0.4.0）
@@ -323,25 +337,41 @@ impl Watcher {
         }
         self.friends_try = Some(Instant::now());
         let (tx, rx) = std::sync::mpsc::channel();
-        let distro = self.cfg.wsl_distro.clone();
         let ua = format!("vrc-wrist-notifier/{} cympfh", crate::VERSION);
         std::thread::spawn(move || {
-            let _ = tx.send(fetch(distro, ua));
+            let _ = tx.send(fetch(ua));
         });
-        self.friends_job = Some(rx);
+        self.friends_job = Some((self.friends_gen, rx));
         logf!("フレンド一覧を取り直しています（{why}）");
     }
 
     /// トレイの「フレンド一覧を取り直す」: キーを新しくしたあとでも試せるように、キーが効かなかった印も消す
+    /// 途中の取り直しがあれば、その結果は捨てて（前のキーのものかもしれない）取り直しなおす
     pub fn manual_refresh(&mut self) {
         self.cfg.friends = true;
         self.friends_key_bad = false;
+        self.abandon_friends_job();
         self.start_friends_refresh("手動");
+    }
+
+    fn abandon_friends_job(&mut self) {
+        self.friends_gen += 1;
+        // 受け口を捨てるので、裏のスレッドの結果は届かない（届いても番号が違うので使わない）
+        self.friends_job = None;
+    }
+
+    /// 設定の窓でキーを消したとき: 取り直しはせず「未入力」にする（今ある一覧はそのまま使う）
+    pub fn key_cleared(&mut self) {
+        self.abandon_friends_job();
+        self.friends_key_bad = true;
+        self.friends_state = "nokey".into();
+        logf!("VRChat のキーを消しました");
     }
 
     /// 裏の取り直しが終わっていたら受け取る。wait なら終わるまで待つ
     pub fn poll_friends_refresh(&mut self, wait: bool) {
-        let Some(rx) = &self.friends_job else { return };
+        let Some((gen, rx)) = &self.friends_job else { return };
+        let gen = *gen;
         let r = if wait {
             rx.recv().unwrap_or_else(|_| FetchResult { code: "error".into(), ..Default::default() })
         } else {
@@ -352,6 +382,9 @@ impl Watcher {
             }
         };
         self.friends_job = None;
+        if gen != self.friends_gen {
+            return;
+        }
         if r.ok {
             self.friend_ids = r.ids.iter().cloned().collect();
             self.friends_at = Some(now());
@@ -362,7 +395,7 @@ impl Watcher {
                 logf!("friends.json を書けませんでした: {e}");
             }
             self.friends_state = "ok".into();
-            logf!("フレンド一覧を取り直しました: {} 人（キーは {} から）", r.ids.len(), r.where_);
+            logf!("フレンド一覧を取り直しました: {} 人", r.ids.len());
             // 取り直す前に参加・退出した人のうち、フレンドだった人は履歴に印を付け直す（同じ鍵なので書き足される）
             let unknown: Vec<Unknown> =
                 std::mem::take(&mut self.unknown_joins).into_iter().filter(|u| self.friend_ids.contains(&u.uid)).collect();
@@ -370,21 +403,14 @@ impl Watcher {
                 self.history(&u.ts, &u.kind, &u.name, &u.world, &u.wid, true, false);
             }
         } else {
-            match r.code.as_str() {
-                "nokey" => {
-                    self.friends_key_bad = true;
-                    self.friends_state = "nokey".into();
-                    logf!("VRCHAT_AUTH_KEY が見つからないので、フレンドの色分けはしません（今までどおり動きます）");
-                }
-                "401" => {
-                    self.friends_key_bad = true;
-                    self.friends_state = "bad".into();
-                    logf!("VRCHAT_AUTH_KEY が効きません（401）。キーを新しくして取り直すまで、今ある一覧を使います");
-                }
-                code => {
-                    self.friends_state = "bad".into();
-                    logf!("VRCHAT_AUTH_KEY でフレンド一覧を取れませんでした（{code}）。今ある一覧を使い、1 時間あとにまた試します");
-                }
+            let (state, key_bad) = classify_fetch(&r.code);
+            self.friends_state = state.into();
+            self.friends_key_bad = key_bad;
+            match state {
+                "nokey" => logf!("VRChat のキーが入力されていないので、フレンドの色分けはしません（トレイの「設定…」から入力できます）"),
+                "unreadable" => logf!("保存したキー（auth.bin）を読めません。設定の窓で入れなおすまで、今ある一覧を使います"),
+                "bad" => logf!("VRChat のキーが効きません（{}）。設定の窓で入れなおすまで、今ある一覧を使います", r.code),
+                _ => logf!("VRChat に問い合わせられませんでした（{}）。今ある一覧を使い、1 時間あとにまた試します", r.code),
             }
         }
     }

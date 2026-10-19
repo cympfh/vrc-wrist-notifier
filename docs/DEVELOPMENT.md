@@ -15,7 +15,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - `windows/src/hub.rs`: 届いたものを履歴（`history.rs`）と通知の待ち行列に振り分ける。「通知設定」の絞り込み、1 秒 10 件・待ち 8 件まで
 - `windows/src/toast.rs` / `panel.rs` / `draw.rs`: カード（640×160）とパネル（1200×800）をソフトウェアで描く（tiny-skia + fontdue。Windows は游ゴシック → メイリオ、記号は Segoe UI Symbol / Emoji）。OS に依らないので、見た目のテストも Linux で回る
 - `windows/src/vr.rs`（Windows だけ）: OpenVR。`openvr_api.dll` は SteamVR に入っているもの（`%LOCALAPPDATA%\openvr\openvrpaths.vrpath` の runtime の `bin\win64`）を libloading で読むので、配るのは exe 1 つ。`VR_InitInternal` は Background（SteamVR を起動しない種類。通知かパネルが作れなければ Overlay でつなぎ直す）、 `FnTable:IVROverlay_028` / `FnTable:IVRSystem_026`
-- `windows/src/tray.rs`: トレイ。`friends_api.rs`: キーを読んで `/auth/user` を 1 回呼ぶ
+- `windows/src/tray.rs`: トレイ。`settings.rs`: 設定の窓。`keystore.rs`: キーの保存（DPAPI）。`friends_api.rs`: キーを読んで `/auth/user` を 1 回呼ぶ
 
 ## SteamVR とのつなぎ方
 
@@ -37,15 +37,18 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 
 ## 問題だけを出す
 
-- トレイ: VRChat のログ出力が Full でない、`VRCHAT_AUTH_KEY` 未設定・使えない、のときだけ黄色の「!」とメニュー・ツールチップに一言
+- トレイ: VRChat のログ出力が Full でない、VRChat のキーが未入力・使えない、のときだけ黄色の「!」とメニュー・ツールチップに一言（文言は `windows/src/auth.rs`）
 - パネル: 右下に同じ注意を小さく。履歴がまだ無いときは、真ん中にデバッグログ（Full）が済んでいるかだけを出す
 - 「フレンドのみ」でフレンド一覧が `off` / 取得中のときだけ、通知設定の下に一言
 
 ## フレンドと自分
 
 - フレンド一覧（ID だけ）は `%LOCALAPPDATA%\vrc-wrist-notifier\friends.json`。`friends_refresh_minutes`（既定 60）分より古くなったときだけ、`GET https://api.vrchat.cloud/api/1/auth/user` を 1 回呼んで取り直す（裏のスレッド。失敗しても 1 時間はあける）
-- キー（`auth` クッキーの値）は Windows の環境変数 `VRCHAT_AUTH_KEY`（プロセス → ユーザー）、無ければ `wsl.exe -d <wsl_distro> --exec zsh -lic` で読む。使うときだけ読み、表示・ログ・保存はしない
+- キー（`auth` クッキーの値）はトレイの「設定…」の窓（`windows/src/settings.rs`、Win32 の伏せ字の入力欄）で入れる。貼り付けたものは `auth.rs` の `normalize_key` で値だけにし（`auth=…`、`Cookie: …; auth=…` も可）、DPAPI（`CryptProtectData`、ユーザー単位、アプリ固有の entropy）で暗号化して `%LOCALAPPDATA%\vrc-wrist-notifier\auth.bin`（先頭 `VWNK1\n`）に保存する（`keystore.rs`）。平文では書かず、表示・ログにも出さない。保存したらすぐ取り直し、「消す」なら取り直さずに「未入力」にする。どちらも途中の取り直しは捨てる（番号 `friends_gen` で、前のキーの結果が後から上書きしないように）
+- 取り直しの失敗は `classify_fetch` で分ける: 未入力 `nokey`、auth.bin を戻せない `unreadable`、401・2 段階認証の途中 `bad`（この 3 つは入れなおすまで自分からは取り直さない）、それ以外（オフライン・5xx・429 など）は `neterror` で、入れなおしは勧めず 1 時間あとにまた試す（パネルには出さない）
+- 0.6.1 までは環境変数 `VRCHAT_AUTH_KEY` と WSL の zsh から読んでいたが、0.7.0 でやめた（`wsl.exe` の起動が遅い・失敗すると「未設定」になり、起動しなおすまで戻らなかった）。config.json の `wsl_distro` は無視する
 - 自分の ID はログの `[Behaviour] User Authenticated: 名前 (usr_…)` から。フレンドは黄色、自分は水色。まとめカードは先頭の名前だけ色を付ける
+- トレイの「テスト通知」（種類 `info.test`）は自分で押したものなので、通知設定（フレンドのみ・オフ）に関わらず出す。SteamVR につながっていないときは VR に出せないので、トレイの吹き出しでそう言う（0.7.0）
 - 「フレンドのみ」が効くのは参加・退出だけ。まとめカードはフレンドと自分だけで数えなおす。「オフ」はどの通知も出さない。履歴はどれでも全員
 
 ## 拾うログの行
@@ -78,7 +81,7 @@ VRChat のログ出力を Full にすると出る行です（形式は [VRCX](ht
 | history_panel / panel_width_m | true / 2.6 | ダッシュボードの「入退室の履歴」 |
 | history_dir | （空） | 履歴の場所。空なら `%LOCALAPPDATA%\vrc-wrist-notifier` |
 | backfill_history | true | 起動時に過去のログから履歴を読む |
-| friends / friends_refresh_minutes / friends_file / wsl_distro | true / 60 / （空） / Ubuntu | フレンド |
+| friends / friends_refresh_minutes / friends_file | true / 60 / （空） | フレンド（キーは設定の窓で入れる。0.6 までの `wsl_distro` は無視） |
 | log_dir | （空） | VRChat のログの場所。空なら既定 |
 
 0.5 までの `frame_host` / `frame_port` は読み飛ばす。

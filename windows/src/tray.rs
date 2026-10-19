@@ -13,12 +13,16 @@ use vwn::watcher::{Out, Status, Watcher};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
+    DispatchMessageW, IsDialogMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
 };
 
 enum Cmd {
     Refresh,
     Test,
+    /// 設定の窓でキーを保存した（すぐに取り直す）
+    KeySaved,
+    /// 設定の窓でキーを消した
+    KeyCleared,
 }
 
 fn icon(warn: bool) -> Icon {
@@ -32,10 +36,8 @@ pub fn problems(s: &Status) -> Vec<String> {
     if s.log == "errors" {
         v.push("⚠ VRChat のログ出力が Full ではありません".into());
     }
-    match s.friends.as_str() {
-        "nokey" => v.push("⚠ VRCHAT_AUTH_KEY 未設定".into()),
-        "bad" => v.push("⚠ VRCHAT_AUTH_KEY が使えません".into()),
-        _ => {}
+    if let Some(p) = vwn::auth::tray_problem(&s.friends) {
+        v.push(p);
     }
     v
 }
@@ -43,12 +45,13 @@ pub fn problems(s: &Status) -> Vec<String> {
 struct Ui {
     tray: TrayIcon,
     test: MenuId,
+    settings: MenuId,
     refresh: MenuId,
     open_log: MenuId,
     quit: MenuId,
 }
 
-fn build_menu(s: &Status) -> (Menu, [MenuId; 4]) {
+fn build_menu(s: &Status) -> (Menu, [MenuId; 5]) {
     let menu = Menu::new();
     let _ = menu.append(&MenuItem::new(format!("vrc-wrist-notifier {}", vwn::VERSION), false, None));
     for p in problems(s) {
@@ -58,16 +61,18 @@ fn build_menu(s: &Status) -> (Menu, [MenuId; 4]) {
         let _ = menu.append(&MenuItem::new("フレンド一覧を取り直しています…", false, None));
     }
     let _ = menu.append(&PredefinedMenuItem::separator());
-    let test = MenuItem::new("テスト通知", true, None);
+    let settings = MenuItem::new("設定…", true, None);
+    let test = MenuItem::new("テスト通知（VR に出す）", true, None);
     let refresh = MenuItem::new("フレンド一覧を取り直す", !s.refreshing, None);
     let open_log = MenuItem::new("ログを開く", vwn::log::path().is_some(), None);
     let quit = MenuItem::new("終了", true, None);
+    let _ = menu.append(&settings);
     let _ = menu.append(&test);
     let _ = menu.append(&refresh);
     let _ = menu.append(&open_log);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&quit);
-    (menu, [test.id().clone(), refresh.id().clone(), open_log.id().clone(), quit.id().clone()])
+    (menu, [test.id().clone(), settings.id().clone(), refresh.id().clone(), open_log.id().clone(), quit.id().clone()])
 }
 
 fn tooltip(s: &Status) -> String {
@@ -82,22 +87,53 @@ fn tooltip(s: &Status) -> String {
 
 impl Ui {
     fn new(s: &Status) -> Ui {
-        let (menu, [test, refresh, open_log, quit]) = build_menu(s);
+        let (menu, [test, settings, refresh, open_log, quit]) = build_menu(s);
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip(tooltip(s))
             .with_icon(icon(!problems(s).is_empty()))
             .build()
             .expect("トレイのアイコンを作れませんでした");
-        Ui { tray, test, refresh, open_log, quit }
+        Ui { tray, test, settings, refresh, open_log, quit }
     }
     fn update(&mut self, s: &Status) {
-        let (menu, [test, refresh, open_log, quit]) = build_menu(s);
+        let (menu, [test, settings, refresh, open_log, quit]) = build_menu(s);
         self.tray.set_menu(Some(Box::new(menu)));
         let _ = self.tray.set_tooltip(Some(tooltip(s)));
         let _ = self.tray.set_icon(Some(icon(!problems(s).is_empty())));
-        (self.test, self.refresh, self.open_log, self.quit) = (test, refresh, open_log, quit);
+        (self.test, self.settings, self.refresh, self.open_log, self.quit) = (test, settings, refresh, open_log, quit);
     }
+}
+
+/// トレイのアイコンから吹き出し（Windows 10/11 では通知センターの通知）を出す。
+/// tray-icon（0.21）はアイコンの uID を公開していないので、NIM_MODIFY が通る uID を探す。これで当たる理由:
+/// - tray-icon はアイコン 1 つごとに専用の隠し窓を作り、その窓に uID を 1 つだけ登録する（window_handle() がその窓）。
+///   なので別の uID で NIM_MODIFY しても、ほかのアイコン（ほかのアプリも含む）を書き換えることはなく、失敗するだけ
+/// - uID はプロセス内の連番（1 から始まり、TrayIconId を作るときにも 1 つ進む）。このアプリはアイコンを 1 つしか作らないので 1〜2、
+///   版が変わって順番がずれても 8 までで足りる
+fn balloon(tray: &TrayIcon, title: &str, text: &str) {
+    use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
+    fn put(dst: &mut [u16], s: &str) {
+        let n = dst.len() - 1;
+        for (d, c) in dst.iter_mut().zip(s.encode_utf16().take(n).chain(std::iter::repeat(0))) {
+            *d = c;
+        }
+    }
+    let hwnd = tray.window_handle();
+    for uid in 1..=8u32 {
+        let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = uid;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_INFO;
+        put(&mut nid.szInfoTitle, title);
+        put(&mut nid.szInfo, text);
+        if unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) } != 0 {
+            return;
+        }
+    }
+    logf!("トレイの吹き出しを出せませんでした");
 }
 
 fn open_path(p: &std::path::Path) {
@@ -137,6 +173,11 @@ pub fn run(cfg: Config, cfg_path: PathBuf) {
                     match c {
                         Cmd::Refresh => w.manual_refresh(),
                         Cmd::Test => w.send_test(),
+                        Cmd::KeySaved => {
+                            logf!("VRChat のキーを保存しました");
+                            w.manual_refresh();
+                        }
+                        Cmd::KeyCleared => w.key_cleared(),
                     }
                 }
                 w.tick();
@@ -156,6 +197,12 @@ pub fn run(cfg: Config, cfg_path: PathBuf) {
                 if msg.message == WM_QUIT {
                     return;
                 }
+                // 設定の窓の Tab・Enter・Esc
+                if let Some(h) = crate::settings::hwnd() {
+                    if IsDialogMessageW(h, &msg) != 0 {
+                        continue;
+                    }
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -165,8 +212,27 @@ pub fn run(cfg: Config, cfg_path: PathBuf) {
                 logf!("トレイの「終了」で終わります");
                 drop(ui); // アイコンを消してから
                 std::process::exit(0);
+            } else if ev.id == ui.settings {
+                let tx = tx.clone();
+                // 窓を作るあいだ Mutex を握らないように、先に写しておく
+                let st = shared.lock().unwrap().clone();
+                crate::settings::open(&st, move |e| {
+                    let _ = tx.send(match e {
+                        crate::settings::KeyEvent::Saved => Cmd::KeySaved,
+                        crate::settings::KeyEvent::Cleared => Cmd::KeyCleared,
+                    });
+                });
             } else if ev.id == ui.test {
-                let _ = tx.send(Cmd::Test);
+                let vr = crate::vr::CONNECTED.load(std::sync::atomic::Ordering::Relaxed);
+                match vwn::toast::test_feedback(vr) {
+                    Some(m) => {
+                        logf!("テスト通知: {m}");
+                        balloon(&ui.tray, "テスト通知", m);
+                    }
+                    None => {
+                        let _ = tx.send(Cmd::Test);
+                    }
+                }
             } else if ev.id == ui.refresh {
                 let _ = tx.send(Cmd::Refresh);
             } else if ev.id == ui.open_log {
@@ -181,6 +247,7 @@ pub fn run(cfg: Config, cfg_path: PathBuf) {
         if key(&now) != key(&shown) {
             ui.update(&now);
         }
+        crate::settings::update(&now);
         shown = now;
         unsafe {
             MsgWaitForMultipleObjects(0, std::ptr::null(), 0, 200, QS_ALLINPUT);

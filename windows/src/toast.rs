@@ -64,6 +64,10 @@ pub fn split_summary(title: &str) -> (&str, &str) {
 /// friends / self_name: そのカードに入っているフレンドの名前と自分の名前。
 /// フレンドのみのときは、自分とフレンドだけで数えなおす（自分が先頭。2 人までは 1 人ずつ、3 人以上は「名前 さんほか N 人」）
 pub fn filter_people(t: &Toast, mode: Notify, friends: &[String], self_name: &str) -> Vec<Toast> {
+    // トレイの「テスト通知」は自分で押したものなので、通知設定（フレンドのみ・オフ）に関わらず出す
+    if is_test(&t.kind) {
+        return vec![t.clone()];
+    }
     if mode == Notify::Off {
         return vec![];
     }
@@ -101,6 +105,17 @@ fn kind_base(kind: &str) -> &str {
 fn kind_sub(kind: &str) -> &str {
     kind.split_once('.').map_or("", |x| x.1)
 }
+/// トレイの「テスト通知」の種類（色とアイコンは info と同じ）
+pub const TEST_KIND: &str = "info.test";
+pub fn is_test(kind: &str) -> bool {
+    kind == TEST_KIND
+}
+
+/// 「テスト通知」を押したとき、トレイに出す一言（SteamVR につながっていれば VR に出るので無し）
+pub fn test_feedback(vr_connected: bool) -> Option<&'static str> {
+    (!vr_connected).then_some("SteamVR が動いていないので、VR には出せません。SteamVR を起動してから試してください")
+}
+
 pub fn is_alert(kind: &str) -> bool {
     matches!(kind_base(kind), "alert" | "urgent")
 }
