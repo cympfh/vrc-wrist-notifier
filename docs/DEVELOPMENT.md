@@ -14,13 +14,14 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - `windows/src/watcher.rs`: ログの解析・まとめ・フレンド・自分の退出時の片付けの除外。見つけたものを `Out::Toast` / `Out::History` としてチャンネルに流す（`--dry-run` では代わりに 1 行ずつ貯める。テストはここを通す）
 - `windows/src/hub.rs`: 届いたものを履歴（`history.rs`）と通知の待ち行列に振り分ける。「通知設定」の絞り込み、1 秒 10 件・待ち 8 件まで
 - `windows/src/toast.rs` / `panel.rs` / `draw.rs`: カード（640×160）とパネル（1200×800）をソフトウェアで描く（tiny-skia + fontdue。Windows は游ゴシック → メイリオ、記号は Segoe UI Symbol / Emoji）。OS に依らないので、見た目のテストも Linux で回る
-- `windows/src/vr.rs`（Windows だけ）: OpenVR。`openvr_api.dll` は SteamVR に入っているもの（`%LOCALAPPDATA%\openvr\openvrpaths.vrpath` の runtime の `bin\win64`）を libloading で読むので、配るのは exe 1 つ。`VR_InitInternal(Overlay)` と `FnTable:IVROverlay_028` / `FnTable:IVRSystem_026`
+- `windows/src/vr.rs`（Windows だけ）: OpenVR。`openvr_api.dll` は SteamVR に入っているもの（`%LOCALAPPDATA%\openvr\openvrpaths.vrpath` の runtime の `bin\win64`）を libloading で読むので、配るのは exe 1 つ。`VR_InitInternal` は Background（SteamVR を起動しない種類。通知かパネルが作れなければ Overlay でつなぎ直す）、 `FnTable:IVROverlay_028` / `FnTable:IVRSystem_026`
 - `windows/src/tray.rs`: トレイ。`friends_api.rs`: キーを読んで `/auth/user` を 1 回呼ぶ
 
 ## SteamVR とのつなぎ方
 
 - SteamVR は自分から起動しない: `vrserver.exe` が動いているのを 5 秒ごとに確かめ、動いているときだけ初期化する（動いていないときに初期化すると SteamVR が起動してしまうため）
-- `VREvent_Quit` を受けたら `AcknowledgeQuit_Exiting` して離れ、`vrserver.exe` がいったん消えるまではつなぎ直さない。トレイのアプリはそのまま動き続ける
+- `VREvent_Quit` を受けたら `VR_Shutdown` して離れ、その `vrserver.exe` の PID が残っているあいだはつなぎ直さない（別の PID が出たらすぐつなぐ）。トレイのアプリはそのまま動き続ける
+- つながっているあいだも 3 秒ごとに `vrserver.exe` の PID を確かめ、消えていたら（落ちた）死んだ接続には何も呼ばずに手放して、また待つ
 - SteamVR が動いていないあいだの通知は捨てる（履歴には残る）
 - 通知: オーバーレイ `cympfh.vrc-wrist-notifier`。頭（デバイス 0）からの相対で、前 `toast_distance_m`、下 `toast_y_m`、幅 `toast_width_m`。`toast_seconds`（急ぎは 1.5 倍）、前後 0.4 秒でフェード。画像は `SetOverlayRaw`（乗算していない RGBA）
 - パネル: `CreateDashboardOverlay`（キー `cympfh.vrc-wrist-notifier.history`、名前「入退室の履歴」、幅 `panel_width_m`、マウス入力、`SendVRSmoothScrollEvents`）。サムネイルは `windows/assets/icon.png`（トレイ・exe と同じ絵）。マウスの y は左下が原点なので反転する。描き直すのは開いているときだけ。5 秒ごとに `FindOverlay` で残っているか確かめ、消えていたら作り直す
