@@ -1,0 +1,75 @@
+# Windows 側のアプリ（windows/）をビルドしてテストし、v* のタグなら GitHub Releases に載せる。
+# Frame 側は端末の上でビルドするので、ここでは扱わない。
+#   タグを push        → ビルド + cargo test + そのタグのリリースを作る（あれば更新）に
+#                         vrc-wrist-notifier.exe と SHA256SUMS を載せる
+#   workflow_dispatch  → ビルド + cargo test だけ（exe は Actions の成果物に置く。リリースは作らない）
+name: windows-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: |
+          cargo build --release --locked --target x86_64-pc-windows-gnu
+          mkdir -p ../dist
+          cp target/x86_64-pc-windows-gnu/release/vrc-wrist-notifier.exe ../dist/
+          cd ../dist && sha256sum vrc-wrist-notifier.exe > SHA256SUMS && cat SHA256SUMS
+      - name: Check version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "tag $want / Cargo.toml $have"
+          [ "$want" = "$have" ] || { echo "::error::タグ ($want) と windows/Cargo.toml の version ($have) が違います"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vrc-wrist-notifier-windows
+          path: dist/*
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # ノート: CHANGELOG.md にそのタグの節があればそれ、無ければ GitHub の自動生成
+          notes=()
+          if [ -f ../CHANGELOG.md ]; then
+            awk -v v="${TAG#v}" '/^## /{p = index($0, v) > 0; next} p' ../CHANGELOG.md > notes.md
+            [ -s notes.md ] && notes=(--notes-file notes.md)
+          fi
+          [ ${#notes[@]} -eq 0 ] && notes=(--generate-notes)
+          pre=(); [[ "$TAG" == *-* ]] && pre=(--prerelease)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 既にある（Frame の wrist-toast などが載っている）ときは、SHA256SUMS の exe の行だけ差し替える
+            if gh release download "$TAG" -p SHA256SUMS -O old.sums 2>/dev/null; then
+              grep -v ' \*\?vrc-wrist-notifier.exe$' old.sums | cat - SHA256SUMS > new.sums || true
+              mv new.sums SHA256SUMS
+            fi
+            gh release upload "$TAG" vrc-wrist-notifier.exe SHA256SUMS --clobber
+          else
+            gh release create "$TAG" vrc-wrist-notifier.exe SHA256SUMS --title "$TAG" "${notes[@]}" "${pre[@]}" --verify-tag
+          fi

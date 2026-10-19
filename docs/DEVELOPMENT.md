@@ -131,6 +131,7 @@ $env:VRC_WRIST_EXE = "…\vrc-wrist-notifier.exe"; .\windows\install.ps1   # 手
 - トレイの表示は問題があるときだけ: Frame に送れない（ホスト名が引けないなど）、VRChat のログ出力が Full でない、`VRCHAT_AUTH_KEY` 未設定・使えない。何も無ければツールチップは名前だけ。UDP なので「Frame が受け取ったか」まではわかりません（それは Frame 側の「Windows 側の見張りが止まっています」が受け持つ）
 - 「フレンド一覧を取り直す」は、キーが効かなかった印も消して 1 回だけ取り直します（キーを新しくしたあと、起動しなおさずに試せる）
 - 自動起動はスタートアップのショートカット `vrc-wrist-notifier.lnk`（install.ps1 が作る）。二重起動は名前付きミューテックス `Local\vrc-wrist-notifier` で防ぎます
+- リリース: `v*` のタグを push すると GitHub Actions（`.github/workflows/windows-release.yml`）が Ubuntu で `x86_64-pc-windows-gnu` にビルドし、`cargo test` のあと、そのタグのリリースに `vrc-wrist-notifier.exe` と `SHA256SUMS` を載せます（リリースが既にあれば差し替え。ノートは CHANGELOG.md にその版の節があればそれ、無ければ自動生成）。タグと `windows/Cargo.toml` の version が違うと止まります。Actions の画面から手で動かす（workflow_dispatch）と、ビルドとテストだけ。Frame 側は端末の上でビルドするので扱いません
 - インストーラーは GitHub Releases の `vrc-wrist-notifier.exe`（あれば `SHA256SUMS` で確かめる）を置きます。0.4 までの PowerShell 版が動いていれば止め、`vrc-wrist-notifier.cmd`（自動起動）と `vrc-wrist-notifier.ps1` を片付けます
 
 `tests/sample_output_log.txt`、`tests/sample_history_log.txt`、`tests/sample_world_log.txt` は形式だけまねた合成データです（実在の人やワールドは入っていません）。
