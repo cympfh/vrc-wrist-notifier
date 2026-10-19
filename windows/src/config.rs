@@ -167,5 +167,8 @@ pub fn save_value(path: &Path, key: &str, value: Value) -> Result<(), String> {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     let s = serde_json::to_string_pretty(&Value::Object(m)).map_err(|e| e.to_string())?;
-    std::fs::write(path, s + "\n").map_err(|e| format!("{} に書けません: {e}", path.display()))
+    // 一時ファイルに書いてから置き換える（途中で止まっても config.json が壊れない）
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, s + "\n").map_err(|e| format!("{} に書けません: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{} に置き換えられません: {e}", path.display()))
 }

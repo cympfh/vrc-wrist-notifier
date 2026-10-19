@@ -3,7 +3,7 @@
 //! Frame の ~/.local/state/vrc-wrist-notifier/history.jsonl をそのまま置けば読める）。人の名前が入るので、どこにも送らない。
 use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -90,9 +90,11 @@ impl History {
     }
 
     fn load_file(&mut self, p: &Path) {
-        let Ok(text) = std::fs::read_to_string(p) else { return };
-        for line in text.lines() {
-            let Some(e) = HistEvent::from_json(line) else { continue };
+        // バイトのまま行に分け、行ごとに UTF-8 にする（途中で切れた行・名前の途中で切れた行があっても、その行だけ読み飛ばす）
+        let Ok(bytes) = std::fs::read(p) else { return };
+        for raw in bytes.split(|&b| b == b'\n') {
+            let line = String::from_utf8_lossy(raw);
+            let Some(e) = HistEvent::from_json(line.trim_end_matches('\r')) else { continue };
             if !self.keys.contains(&e.key) {
                 self.insert_sorted(e);
             } else if let Some(old) = self.find(&e.key) {
@@ -153,9 +155,19 @@ impl History {
         if std::fs::metadata(self.path()).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
             let _ = std::fs::rename(self.path(), self.old_path()); // 前の世代は置き換わる（容量の上限）
         }
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.path()) {
-            let _ = writeln!(f, "{}", e.to_json());
+        let Ok(mut f) = std::fs::OpenOptions::new().create(true).read(true).append(true).open(self.path()) else { return };
+        // 前の行が途中で切れていたら（改行で終わっていなければ）、改行を足してから書く
+        let mut rec = format!("{}\n", e.to_json());
+        if let Ok(len) = f.seek(SeekFrom::End(0)) {
+            if len > 0 {
+                let mut last = [0u8; 1];
+                if f.seek(SeekFrom::Start(len - 1)).is_ok() && f.read_exact(&mut last).is_ok() && last[0] != b'\n' {
+                    rec.insert(0, '\n');
+                }
+            }
         }
+        // 1 件を 1 回で書く（追記モードなので、同時に書いても行が混ざらない）
+        let _ = f.write_all(rec.as_bytes());
     }
 }
 

@@ -250,7 +250,7 @@ impl Watcher {
         self.send_toast(kind, title, text, "", "", false, "", false, &[], false, "");
     }
 
-    /// --test / トレイの「テスト通知」: テスト通知を 1 件
+    /// トレイの「テスト通知」: テスト通知を 1 件
     pub fn send_test(&mut self) {
         self.simple_toast("join", "テスト", "vrc-wrist-notifier から届きました");
     }

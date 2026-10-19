@@ -1800,6 +1800,7 @@ dependencies = [
  "native-tls",
  "regex",
  "serde_json",
+ "tempfile",
  "tiny-skia",
  "tray-icon",
  "ureq",

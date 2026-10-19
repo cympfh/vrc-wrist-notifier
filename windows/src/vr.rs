@@ -46,6 +46,30 @@ const EV_QUIT: u32 = 700;
 const FLAG_SMOOTH_SCROLL: i32 = 1 << 17;
 const INPUT_MOUSE: i32 = 1;
 
+// IVROverlay_028 の関数表での位置（openvr_capi.h の VR_IVROverlay_FnTable の並び、全 82 個）
+const OV_FIND_OVERLAY: usize = 0;
+const OV_CREATE_OVERLAY: usize = 1;
+const OV_DESTROY_OVERLAY: usize = 3;
+const OV_SET_OVERLAY_FLAG: usize = 11;
+const OV_SET_OVERLAY_ALPHA: usize = 16;
+const OV_SET_OVERLAY_SORT_ORDER: usize = 20;
+const OV_SET_OVERLAY_WIDTH_IN_METERS: usize = 22;
+const OV_SET_OVERLAY_TRANSFORM_TRACKED_DEVICE_RELATIVE: usize = 35;
+const OV_SHOW_OVERLAY: usize = 43;
+const OV_HIDE_OVERLAY: usize = 44;
+const OV_POLL_NEXT_OVERLAY_EVENT: usize = 48;
+const OV_SET_OVERLAY_INPUT_METHOD: usize = 50;
+const OV_SET_OVERLAY_MOUSE_SCALE: usize = 52;
+const OV_SET_OVERLAY_RAW: usize = 62;
+const OV_CREATE_DASHBOARD_OVERLAY: usize = 67;
+// IVRSystem_026 の関数表での位置（VR_IVRSystem_FnTable、全 51 個）
+const SYS_POLL_NEXT_EVENT: usize = 30;
+
+/// VR_InitInternal のアプリの種類。Background は SteamVR を起動しない（動いていなければ 121 で失敗する）
+const APP_OVERLAY: i32 = 2;
+const APP_BACKGROUND: i32 = 3;
+const ERR_NO_SERVER_FOR_BACKGROUND: i32 = 121;
+
 /// IVROverlay_028 / IVRSystem_026 の関数表（順番は openvr_capi.h のとおり）
 struct Api {
     _lib: libloading::Library,
@@ -61,18 +85,19 @@ macro_rules! call {
 }
 
 impl Api {
-    fn connect(runtime: &std::path::Path) -> Result<Api, String> {
+    /// 戻り値の Err の i32 は VR_InitInternal のエラー（0 ならそれ以外の失敗）
+    fn connect(runtime: &std::path::Path, app: i32) -> Result<Api, (i32, String)> {
         let dll = runtime.join("bin").join("win64").join("openvr_api.dll");
         unsafe {
-            let lib = libloading::Library::new(&dll).map_err(|e| format!("{} を読めません（{e}）", dll.display()))?;
+            let lib = libloading::Library::new(&dll).map_err(|e| (0, format!("{} を読めません（{e}）", dll.display())))?;
             let init: libloading::Symbol<unsafe extern "C" fn(*mut i32, i32) -> isize> =
-                lib.get(b"VR_InitInternal\0").map_err(|e| e.to_string())?;
+                lib.get(b"VR_InitInternal\0").map_err(|e| (0, e.to_string()))?;
             let get: libloading::Symbol<unsafe extern "C" fn(*const c_char, *mut i32) -> isize> =
-                lib.get(b"VR_GetGenericInterface\0").map_err(|e| e.to_string())?;
+                lib.get(b"VR_GetGenericInterface\0").map_err(|e| (0, e.to_string()))?;
             let mut err = 0;
-            init(&mut err, 2); // VRApplication_Overlay
+            init(&mut err, app);
             if err != 0 {
-                return Err(format!("VR_InitInternal: {err}"));
+                return Err((err, format!("VR_InitInternal: {err}")));
             }
             let table = |name: &str| {
                 let c = CString::new(format!("FnTable:{name}")).unwrap();
@@ -88,7 +113,7 @@ impl Api {
                     if let Ok(shut) = lib.get::<unsafe extern "C" fn()>(b"VR_ShutdownInternal\0") {
                         shut();
                     }
-                    Err(e)
+                    Err((0, e))
                 }
             }
         }
@@ -96,69 +121,66 @@ impl Api {
     fn find(&self, key: &str) -> H {
         let k = CString::new(key).unwrap();
         let mut h = INVALID;
-        unsafe { call!(self.ov, 0, fn(*const c_char, *mut H) -> i32, k.as_ptr(), &mut h) };
+        unsafe { call!(self.ov, OV_FIND_OVERLAY, fn(*const c_char, *mut H) -> i32, k.as_ptr(), &mut h) };
         h
     }
     fn create(&self, key: &str, name: &str) -> Result<H, i32> {
         let (k, n) = (CString::new(key).unwrap(), CString::new(name).unwrap());
         let mut h = INVALID;
-        let e = unsafe { call!(self.ov, 1, fn(*const c_char, *const c_char, *mut H) -> i32, k.as_ptr(), n.as_ptr(), &mut h) };
+        let e = unsafe { call!(self.ov, OV_CREATE_OVERLAY, fn(*const c_char, *const c_char, *mut H) -> i32, k.as_ptr(), n.as_ptr(), &mut h) };
         if e == 0 { Ok(h) } else { Err(e) }
     }
     fn create_dashboard(&self, key: &str, name: &str) -> Result<(H, H), i32> {
         let (k, n) = (CString::new(key).unwrap(), CString::new(name).unwrap());
         let (mut m, mut t) = (INVALID, INVALID);
         let e = unsafe {
-            call!(self.ov, 67, fn(*const c_char, *const c_char, *mut H, *mut H) -> i32, k.as_ptr(), n.as_ptr(), &mut m, &mut t)
+            call!(self.ov, OV_CREATE_DASHBOARD_OVERLAY, fn(*const c_char, *const c_char, *mut H, *mut H) -> i32, k.as_ptr(), n.as_ptr(), &mut m, &mut t)
         };
         if e == 0 { Ok((m, t)) } else { Err(e) }
     }
     fn destroy(&self, h: H) {
-        unsafe { call!(self.ov, 3, fn(H) -> i32, h) };
+        unsafe { call!(self.ov, OV_DESTROY_OVERLAY, fn(H) -> i32, h) };
     }
     fn flag(&self, h: H, f: i32, on: bool) {
-        unsafe { call!(self.ov, 11, fn(H, i32, bool) -> i32, h, f, on) };
+        unsafe { call!(self.ov, OV_SET_OVERLAY_FLAG, fn(H, i32, bool) -> i32, h, f, on) };
     }
     fn alpha(&self, h: H, a: f32) {
-        unsafe { call!(self.ov, 16, fn(H, f32) -> i32, h, a) };
+        unsafe { call!(self.ov, OV_SET_OVERLAY_ALPHA, fn(H, f32) -> i32, h, a) };
     }
     fn sort_order(&self, h: H, o: u32) {
-        unsafe { call!(self.ov, 20, fn(H, u32) -> i32, h, o) };
+        unsafe { call!(self.ov, OV_SET_OVERLAY_SORT_ORDER, fn(H, u32) -> i32, h, o) };
     }
     fn width(&self, h: H, m: f32) {
-        unsafe { call!(self.ov, 22, fn(H, f32) -> i32, h, m) };
+        unsafe { call!(self.ov, OV_SET_OVERLAY_WIDTH_IN_METERS, fn(H, f32) -> i32, h, m) };
     }
     fn place_on_head(&self, h: H, y: f32, dist: f32) {
         let m = Matrix34([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, -dist]]);
-        unsafe { call!(self.ov, 35, fn(H, u32, *const Matrix34) -> i32, h, 0, &m) };
+        unsafe { call!(self.ov, OV_SET_OVERLAY_TRANSFORM_TRACKED_DEVICE_RELATIVE, fn(H, u32, *const Matrix34) -> i32, h, 0, &m) };
     }
     fn show(&self, h: H) {
-        unsafe { call!(self.ov, 43, fn(H) -> i32, h) };
+        unsafe { call!(self.ov, OV_SHOW_OVERLAY, fn(H) -> i32, h) };
     }
     fn hide(&self, h: H) {
-        unsafe { call!(self.ov, 44, fn(H) -> i32, h) };
+        unsafe { call!(self.ov, OV_HIDE_OVERLAY, fn(H) -> i32, h) };
     }
     fn poll_overlay(&self, h: H) -> Option<Event> {
         let mut e: Event = unsafe { std::mem::zeroed() };
-        let ok = unsafe { call!(self.ov, 48, fn(H, *mut Event, u32) -> bool, h, &mut e, std::mem::size_of::<Event>() as u32) };
+        let ok = unsafe { call!(self.ov, OV_POLL_NEXT_OVERLAY_EVENT, fn(H, *mut Event, u32) -> bool, h, &mut e, std::mem::size_of::<Event>() as u32) };
         ok.then_some(e)
     }
     fn input_mouse(&self, h: H, w: f32, hgt: f32) {
         unsafe {
-            call!(self.ov, 50, fn(H, i32) -> i32, h, INPUT_MOUSE);
-            call!(self.ov, 52, fn(H, *const Vec2) -> i32, h, &Vec2(w, hgt));
+            call!(self.ov, OV_SET_OVERLAY_INPUT_METHOD, fn(H, i32) -> i32, h, INPUT_MOUSE);
+            call!(self.ov, OV_SET_OVERLAY_MOUSE_SCALE, fn(H, *const Vec2) -> i32, h, &Vec2(w, hgt));
         }
     }
     fn raw(&self, h: H, rgba: &mut [u8], w: u32, hgt: u32) -> i32 {
-        unsafe { call!(self.ov, 62, fn(H, *mut c_void, u32, u32, u32) -> i32, h, rgba.as_mut_ptr() as *mut c_void, w, hgt, 4) }
+        unsafe { call!(self.ov, OV_SET_OVERLAY_RAW, fn(H, *mut c_void, u32, u32, u32) -> i32, h, rgba.as_mut_ptr() as *mut c_void, w, hgt, 4) }
     }
     fn poll_system(&self) -> Option<Event> {
         let mut e: Event = unsafe { std::mem::zeroed() };
-        let ok = unsafe { call!(self.sys, 30, fn(*mut Event, u32) -> bool, &mut e, std::mem::size_of::<Event>() as u32) };
+        let ok = unsafe { call!(self.sys, SYS_POLL_NEXT_EVENT, fn(*mut Event, u32) -> bool, &mut e, std::mem::size_of::<Event>() as u32) };
         ok.then_some(e)
-    }
-    fn ack_quit(&self) {
-        unsafe { call!(self.sys, 47, fn() -> (), ) };
     }
 }
 
@@ -178,8 +200,8 @@ fn f32_at(e: &Event, i: usize) -> f32 {
 }
 
 // ---------------------------------------------------------------- SteamVR が動いているか
-/// vrserver.exe が動いているか（動いていないときに OpenVR を初期化すると SteamVR が起動してしまう）
-pub fn vrserver_running() -> bool {
+/// 動いている vrserver.exe の PID（無ければ None）。動いていないときに OpenVR を初期化すると SteamVR が起動してしまうので、先に確かめる
+pub fn vrserver_pid() -> Option<u32> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -187,16 +209,16 @@ pub fn vrserver_running() -> bool {
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap == INVALID_HANDLE_VALUE {
-            return false;
+            return None;
         }
         let mut pe: PROCESSENTRY32W = std::mem::zeroed();
         pe.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut found = false;
+        let mut found = None;
         let mut ok = Process32FirstW(snap, &mut pe) != 0;
         while ok {
             let n = pe.szExeFile.iter().position(|&c| c == 0).unwrap_or(pe.szExeFile.len());
             if String::from_utf16_lossy(&pe.szExeFile[..n]).eq_ignore_ascii_case("vrserver.exe") {
-                found = true;
+                found = Some(pe.th32ProcessID);
                 break;
             }
             ok = Process32NextW(snap, &mut pe) != 0;
@@ -217,6 +239,10 @@ fn runtime_dir() -> Option<PathBuf> {
 // ---------------------------------------------------------------- つながっている間
 struct Session {
     api: Api,
+    /// つないだときの vrserver.exe の PID
+    pid: u32,
+    /// vrserver.exe がまだ動いているかを最後に確かめた時刻
+    alive_at: Instant,
     toast: H,
     panel: H,
     thumb: H,
@@ -228,31 +254,41 @@ struct Session {
 }
 
 impl Session {
-    fn open(api: Api, cfg: &Config) -> Session {
+    /// オーバーレイを作る。strict（Background でつないだとき）なら、通知かパネルが作れなければ None にして、
+    /// 呼んだ側が Overlay でつなぎ直す
+    fn open(api: Api, cfg: &Config, pid: u32, strict: bool) -> Option<Session> {
         let toast = match api.find(TOAST_KEY) {
             INVALID => api.create(TOAST_KEY, "VRChat の通知").unwrap_or_else(|e| {
-                logf!("通知のオーバーレイを作れません（{e}）");
+                if !strict {
+                    logf!("通知のオーバーレイを作れません（{e}）");
+                }
                 INVALID
             }),
             h => h,
         };
-        if toast != INVALID {
-            api.width(toast, cfg.toast_width_m as f32);
-            api.sort_order(toast, 200);
-            api.hide(toast);
-            logf!("SteamVR につながりました。通知のオーバーレイ {TOAST_KEY} を登録しました");
-        }
         let mut s = Session {
-            api, toast, panel: INVALID, thumb: INVALID, panel_visible: false, panel_version: None, panel_dirty: true,
-            checked_at: Instant::now(), showing: None,
+            api, pid, toast, panel: INVALID, thumb: INVALID, panel_visible: false, panel_version: None, panel_dirty: true,
+            checked_at: Instant::now(), alive_at: Instant::now(), showing: None,
         };
         if cfg.history_panel {
-            s.make_panel(cfg);
+            s.make_panel(cfg, strict);
         }
-        s
+        if strict && (toast == INVALID || (cfg.history_panel && s.panel == INVALID)) {
+            return None; // Drop で作れた分は消してから離れる
+        }
+        if toast != INVALID {
+            s.api.width(toast, cfg.toast_width_m as f32);
+            s.api.sort_order(toast, 200);
+            s.api.hide(toast);
+            logf!("SteamVR につながりました。通知のオーバーレイ {TOAST_KEY} を登録しました");
+        }
+        if s.panel != INVALID {
+            logf!("ダッシュボードに「入退室の履歴」（{PANEL_KEY}）を登録しました");
+        }
+        Some(s)
     }
 
-    fn make_panel(&mut self, cfg: &Config) {
+    fn make_panel(&mut self, cfg: &Config, quiet: bool) {
         match self.api.create_dashboard(PANEL_KEY, "入退室の履歴") {
             Ok((m, t)) => {
                 self.panel = m;
@@ -264,9 +300,9 @@ impl Session {
                 self.api.raw(t, &mut icon.0, icon.1, icon.2);
                 self.panel_dirty = true;
                 self.panel_version = None;
-                logf!("ダッシュボードに「入退室の履歴」（{PANEL_KEY}）を登録しました");
             }
-            Err(e) => logf!("ダッシュボードのパネルを作れません（{e}）"),
+            Err(e) if !quiet => logf!("ダッシュボードのパネルを作れません（{e}）"),
+            Err(_) => {}
         }
     }
 
@@ -275,7 +311,6 @@ impl Session {
         while let Some(e) = self.api.poll_system() {
             if e.kind == EV_QUIT {
                 logf!("SteamVR が終わるので離れます");
-                self.api.ack_quit();
                 return false;
             }
         }
@@ -283,7 +318,10 @@ impl Session {
         if cfg.history_panel && self.checked_at.elapsed() >= Duration::from_secs(5) {
             self.checked_at = Instant::now();
             if self.api.find(PANEL_KEY) == INVALID {
-                self.make_panel(cfg);
+                self.make_panel(cfg, false);
+                if self.panel != INVALID {
+                    logf!("ダッシュボードの「入退室の履歴」を作り直しました");
+                }
             }
         }
         if self.panel != INVALID {
@@ -383,13 +421,36 @@ fn icon_rgba() -> (Vec<u8>, u32, u32) {
 }
 
 // ---------------------------------------------------------------- スレッド
+/// vrserver.exe の pid につなぐ。まず Background（SteamVR を起動しない種類）で、通知とパネルが作れなければ Overlay で。
+/// 121（vrserver が今ちょうど終わった）は黙って次の確認を待つ
+fn connect(cfg: &Config, pid: u32) -> Result<Session, String> {
+    let dir = runtime_dir().ok_or_else(|| "SteamVR の場所がわかりません（openvrpaths.vrpath）".to_string())?;
+    match Api::connect(&dir, APP_BACKGROUND) {
+        Ok(api) => {
+            if let Some(s) = Session::open(api, cfg, pid, true) {
+                return Ok(s);
+            }
+            // Background では作れなかった（Drop で切ってある）。vrserver が動いているのは確かめてあるので、Overlay でも起動はしない
+            logf!("Background ではオーバーレイを作れないので、Overlay でつなぎ直します");
+        }
+        Err((ERR_NO_SERVER_FOR_BACKGROUND, _)) => return Err(String::new()),
+        Err((_, e)) => return Err(e),
+    }
+    if vrserver_pid() != Some(pid) {
+        return Err(String::new());
+    }
+    let api = Api::connect(&dir, APP_OVERLAY).map_err(|(_, e)| e)?;
+    Session::open(api, cfg, pid, false).ok_or_else(|| "オーバーレイを作れません".to_string())
+}
+
 /// VR のスレッド。見張りから届いたものを履歴と通知にし、SteamVR が動いていれば出す
 pub fn run(cfg: Config, cfg_path: PathBuf, rx: Receiver<Out>, status: Arc<Mutex<Status>>) {
     let mut hub = Hub::new(&cfg, cfg_path);
     logf!("履歴: {}（{} 件）", hub.history.path().display(), hub.history.events().len());
     let mut session: Option<Session> = None;
     let mut checked: Option<Instant> = None;
-    let mut wait_gone = false; // SteamVR が終わると言ってから、vrserver.exe が消えるまではつなぎ直さない
+    // SteamVR が終わると言った vrserver.exe の PID。同じ PID が残っているあいだはつなぎ直さない（別の PID になれば、すぐつなぐ）
+    let mut quit_pid: Option<u32> = None;
     let mut last_err = String::new();
     let mut dropped = 0usize;
     loop {
@@ -404,31 +465,44 @@ pub fn run(cfg: Config, cfg_path: PathBuf, rx: Receiver<Out>, status: Arc<Mutex<
                 }
             }
         }
+        // つながっているあいだも、vrserver.exe が落ちていないか 3 秒ごとに確かめる（VREvent_Quit 無しで落ちたとき）
+        if let Some(s) = session.as_mut() {
+            if s.alive_at.elapsed() >= Duration::from_secs(3) {
+                s.alive_at = Instant::now();
+                if vrserver_pid() != Some(s.pid) {
+                    logf!("SteamVR が落ちたので離れます");
+                    // 死んだ接続には何も呼ばない（止まるかもしれないので、後片付けをせずに手放す）
+                    std::mem::forget(session.take());
+                    checked = None;
+                }
+            }
+        }
         if session.is_none() && checked.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
             checked = Some(Instant::now());
-            let running = vrserver_running();
-            if !running {
-                wait_gone = false;
-            } else if !wait_gone {
-                match runtime_dir().ok_or_else(|| "SteamVR の場所がわかりません（openvrpaths.vrpath）".to_string()).and_then(|d| Api::connect(&d)) {
-                    Ok(api) => {
+            match vrserver_pid() {
+                None => quit_pid = None,
+                Some(pid) if quit_pid == Some(pid) => {}
+                Some(pid) => match connect(&cfg, pid) {
+                    Ok(s) => {
                         last_err.clear();
-                        session = Some(Session::open(api, &cfg));
+                        quit_pid = None;
+                        session = Some(s);
                     }
                     Err(e) => {
-                        if e != last_err {
+                        if !e.is_empty() && e != last_err {
                             logf!("SteamVR につなげません: {e}");
-                            last_err = e;
                         }
+                        last_err = e;
                     }
-                }
+                },
             }
         }
         let visible = match session.as_mut() {
             Some(s) => {
                 if !s.frame(&mut hub, &cfg) {
+                    quit_pid = Some(s.pid);
                     session = None;
-                    wait_gone = true;
+                    checked = None;
                     false
                 } else {
                     s.panel_visible

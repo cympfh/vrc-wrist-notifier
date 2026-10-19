@@ -4,7 +4,7 @@
 //!   cd windows && cargo test
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 use vwn::config::Config;
 use vwn::hub::Hub;
 use vwn::toast::Toast;
@@ -25,11 +25,9 @@ fn check(got: Vec<String>, name: &str) {
     }
 }
 
-fn tmpdir(tag: &str) -> PathBuf {
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let d = std::env::temp_dir().join(format!("vrc-wrist-notifier-test-{tag}-{n}"));
-    fs::create_dir_all(&d).unwrap();
-    d
+/// テストごとの一時フォルダ（終わると消える。本物の %APPDATA% / %LOCALAPPDATA% には書かない）
+fn tmpdir(tag: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(&format!("vwn-test-{tag}-")).tempdir().unwrap()
 }
 
 fn config(dir: &Path, extra: serde_json::Value) -> Config {
@@ -59,28 +57,32 @@ fn replay(cfg: Config, log: &str) -> Vec<String> {
 
 #[test]
 fn replay_events() {
-    let d = tmpdir("events");
+    let _td = tmpdir("events");
+    let d = _td.path();
     check(replay(config(&d, serde_json::json!({})), "sample_output_log.txt"), "expected_events.tsv");
 }
 
 #[test]
 fn replay_batch() {
     // 参加・退出のまとめ（1 人、2 人、3 人、大勢、参加と退出が混ざる、ワールドが違う）
-    let d = tmpdir("batch");
+    let _td = tmpdir("batch");
+    let d = _td.path();
     check(replay(config(&d, serde_json::json!({})), "sample_batch_log.txt"), "expected_batch.tsv");
 }
 
 /// 過去のログからの履歴: 2 つ目のファイルは、ワールドの行より前の参加（前のファイルのワールドを引き継がない）、絵文字のワールド名、ワールド ID
-fn two_logs() -> PathBuf {
-    let d = tmpdir("history");
+fn two_logs() -> tempfile::TempDir {
+    let td = tmpdir("history");
+    let d = td.path();
     place(&d, "sample_output_log.txt", "output_log_2026-01-02_21-00-00.txt", 1_767_355_200);
     place(&d, "sample_world_log.txt", "output_log_2026-01-03_20-00-00.txt", 1_767_441_600);
-    d
+    td
 }
 
 #[test]
 fn backfill_history() {
-    let d = two_logs();
+    let td = two_logs();
+    let d = td.path();
     let mut w = Watcher::new(config(&d, serde_json::json!({})), None);
     w.backfill();
     check(w.take_output(), "expected_history.tsv");
@@ -89,7 +91,8 @@ fn backfill_history() {
 #[test]
 fn show_world() {
     // 今いるワールド: いちばん新しいログの最後のワールド
-    let d = two_logs();
+    let td = two_logs();
+    let d = td.path();
     let mut w = Watcher::new(config(&d, serde_json::json!({})), None);
     let newest = w.newest_log().unwrap();
     w.read_current_world(&newest);
@@ -99,7 +102,8 @@ fn show_world() {
 #[test]
 fn friends() {
     // friends.json の人は印が付き、まとめカードの先頭にはフレンドが来る
-    let d = tmpdir("friend");
+    let _td = tmpdir("friend");
+    let d = _td.path();
     place(&d, "sample_friend_log.txt", "output_log_2026-01-06_20-00-00.txt", 1_767_700_000);
     let extra = serde_json::json!({ "friends_file": here().join("sample_friends.json") });
     check(replay(config(&d, extra.clone()), "sample_friend_log.txt"), "expected_friend.tsv");
@@ -110,10 +114,12 @@ fn friends() {
 
 #[test]
 fn status_line() {
-    let d = two_logs();
+    let td = two_logs();
+    let d = td.path();
     let mut w = Watcher::new(config(&d, serde_json::json!({})), None);
     assert_eq!(w.status_line(), "log\tfull\toutput_log_2026-01-03_20-00-00.txt");
-    let e = tmpdir("nolog");
+    let _te = tmpdir("nolog");
+    let e = _te.path();
     let mut w = Watcher::new(config(&e, serde_json::json!({})), None);
     assert_eq!(w.status_line(), "log\tnolog");
 }
@@ -121,7 +127,8 @@ fn status_line() {
 #[test]
 fn live_sink_feeds_history_and_toasts() {
     // dry-run でないときは、通知と履歴が VR のスレッド向けのチャンネルに流れる
-    let d = tmpdir("live");
+    let _td = tmpdir("live");
+    let d = _td.path();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut w = Watcher::new(config(&d, serde_json::json!({})), Some(tx));
     w.replay(&here().join("sample_teardown_log.txt")).unwrap();
@@ -141,7 +148,8 @@ fn live_sink_feeds_history_and_toasts() {
 #[test]
 fn hub_notify_setting_saved_to_temp_config() {
     // 「通知設定」: オフなら何も出さない。パネルで選ぶと config.json のその項目だけ書き換わる（本物の %APPDATA% には触らない）
-    let d = tmpdir("hub");
+    let _td = tmpdir("hub");
+    let d = _td.path();
     let cfg_path = d.join("config.json");
     fs::write(&cfg_path, "{\"_comment\":\"keep\",\"notify_people\":\"off\",\"notify_leave\":false}").unwrap();
     let (mut cfg, _) = Config::load(&cfg_path);
@@ -167,7 +175,8 @@ fn hub_notify_setting_saved_to_temp_config() {
 
 #[test]
 fn config_defaults_and_unknown_keys() {
-    let d = tmpdir("cfg");
+    let _td = tmpdir("cfg");
+    let d = _td.path();
     let p = d.join("config.json");
     // 0.5 までの frame_host / frame_port は黙って読み飛ばす
     fs::write(&p, "\u{feff}{\"_comment\":\"x\",\"frame_host\":\"192.168.0.9\",\"frame_port\":1,\"notify_leave\":false,\"bogus\":1}").unwrap();
@@ -184,7 +193,8 @@ fn config_defaults_and_unknown_keys() {
 fn self_leave_teardown() {
     // 自分がワールドを出たとき（OnLeftRoom → 全員分の OnPlayerLeft → 自分 → Entering Room）や VRChat を終えたときの
     // 他人の退出は出さない（通知も履歴も）。自分がいるあいだの他人の退出（Ann, 2 つ目のワールドの Bob）はそのまま
-    let d = tmpdir("teardown");
+    let _td = tmpdir("teardown");
+    let d = _td.path();
     place(&d, "sample_teardown_log.txt", "output_log_2026-01-07_21-00-00.txt", 1_767_800_000);
     check(replay(config(&d, serde_json::json!({})), "sample_teardown_log.txt"), "expected_teardown.tsv");
     let mut w = Watcher::new(config(&d, serde_json::json!({})), None);
@@ -210,7 +220,8 @@ fn history_leaves(out: &[String]) -> Vec<String> {
 #[test]
 fn rejoin_without_entering_room_clears_teardown() {
     // OnLeftRoom のあと Entering Room 無しで自分がまた入った（OnPlayerJoined 自分）ら、その後の本当の退出は出す
-    let d = tmpdir("rejoin");
+    let _td = tmpdir("rejoin");
+    let d = _td.path();
     let log = [
         ln("10:00:00", &format!("[Behaviour] User Authenticated: Me ({ME})")),
         ln("10:00:01", "[Behaviour] Entering Room: World A"),
@@ -239,7 +250,8 @@ fn rejoin_without_entering_room_clears_teardown() {
 #[test]
 fn log_rotation_resets_teardown() {
     // 前のログが OnLeftRoom で終わっても（VRChat を終えた）、次のログファイルでは片付けの状態を引き継がない
-    let d = tmpdir("rotate");
+    let _td = tmpdir("rotate");
+    let d = _td.path();
     let a = [ln("09:00:00", &format!("[Behaviour] User Authenticated: Me ({ME})")), ln("09:00:01", "[Behaviour] Entering Room: World A"),
              joined("09:01:00", "Ann", 901), ln("09:30:00", "[Behaviour] OnLeftRoom"), left("09:30:00", "Ann", 901)].concat();
     let b = [joined("11:00:00", "Zed", 905), left("11:10:00", "Zed", 905)].concat();
@@ -258,7 +270,8 @@ fn log_rotation_resets_teardown() {
 fn teardown_with_unknown_self_id() {
     // 自分の ID がわからない（User Authenticated の行が無い）ときも片付けの退出は出さない。自分の退出も見分けられないので出ない。
     // ワールドにいるあいだの退出はそのまま
-    let d = tmpdir("noself");
+    let _td = tmpdir("noself");
+    let d = _td.path();
     let log = [
         ln("10:00:01", "[Behaviour] Entering Room: World A"),
         joined("10:00:02", "Me", 900),

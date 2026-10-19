@@ -22,6 +22,11 @@ impl Toast {
     }
 }
 
+/// 外から来た文字列を表示・保存してよい形にする: 制御文字（改行・タブを含む）を空白にし、max 文字までにする
+pub fn clean(s: &str, max: usize) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).take(max).collect::<String>().trim().to_string()
+}
+
 /// 通知設定: 全員 / フレンドのみ（参加・退出をフレンドと自分だけに）/ オフ（どの通知も出さない）。履歴には関係なく全員残る
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Notify {

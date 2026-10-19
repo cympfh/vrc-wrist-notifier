@@ -4,7 +4,7 @@ use crate::config::{self, Config};
 use crate::history::History;
 use crate::logf;
 use crate::panel::{HistoryPanel, PanelStatus};
-use crate::toast::{self, Notify, Toast};
+use crate::toast::{self, clean, Notify, Toast};
 use crate::watcher::Out;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -33,10 +33,19 @@ impl Hub {
 
     pub fn handle(&mut self, o: Out) {
         match o {
-            Out::History(e) => {
+            Out::History(mut e) => {
+                e.name = clean(&e.name, 120);
+                e.world = clean(&e.world, 120);
+                e.key = clean(&e.key, 200);
+                e.wid = clean(&e.wid, 64);
                 self.history.add(e);
             }
-            Out::Toast { toast: t, friends, self_name } => {
+            Out::Toast { toast: mut t, friends, self_name } => {
+                t.kind = clean(&t.kind, 24);
+                t.title = clean(&t.title, 120);
+                t.text = clean(&t.text, 240);
+                let friends: Vec<String> = friends.iter().map(|f| clean(f, 120)).collect();
+                let self_name = clean(&self_name, 120);
                 let mode = self.panel.notify();
                 let shown = toast::filter_people(&t, mode, &friends, &self_name);
                 if shown.is_empty() {

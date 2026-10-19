@@ -4,7 +4,8 @@
 //!   vrc-wrist-notifier.exe                         トレイに入って見張る（2 つ目は起動しない）
 //!   vrc-wrist-notifier.exe --replay <ログ> --dry-run   検出結果だけ表示
 //!   vrc-wrist-notifier.exe --backfill [--dry-run]  過去のログから履歴に足して終わる
-//!   vrc-wrist-notifier.exe --dump-png <フォルダ>    通知のカードと履歴のパネルを PNG に描いて終わる（見た目の確認用）
+//!   vrc-wrist-notifier.exe --dump-png <フォルダ> [--history-dir <フォルダ>]
+//!                                                  通知のカードと履歴のパネルを PNG に描いて終わる（見た目の確認用）
 //!   vrc-wrist-notifier.exe --show-world            いちばん新しいログから、今いるワールドを表示するだけ
 //!   vrc-wrist-notifier.exe --status                VRChat のログ出力が Full になっているかを表示するだけ
 //!   vrc-wrist-notifier.exe --refresh-friends       フレンド一覧を今すぐ取り直して、件数だけ表示
@@ -28,6 +29,7 @@ mod vr;
 struct Args {
     config: Option<PathBuf>,
     dump_png: Option<PathBuf>,
+    history_dir: Option<PathBuf>,
     replay: Option<PathBuf>,
     backfill: bool,
     show_world: bool,
@@ -44,6 +46,7 @@ fn parse_args() -> Result<Args, String> {
         // PowerShell 版の書き方（-Replay, -DryRun など）も受け付ける
         match s.trim_start_matches('-').to_ascii_lowercase().replace('-', "").as_str() {
             "config" => a.config = Some(it.next().ok_or("--config の後にファイルがありません")?.into()),
+            "historydir" => a.history_dir = Some(it.next().ok_or("--history-dir の後にフォルダがありません")?.into()),
             "dumppng" => a.dump_png = Some(it.next().ok_or("--dump-png の後にフォルダがありません")?.into()),
             "replay" => a.replay = Some(it.next().ok_or("--replay の後にファイルがありません")?.into()),
             "backfill" => a.backfill = true,
@@ -106,7 +109,7 @@ fn main() {
         logf!("{w}");
     }
     if let Some(dir) = &args.dump_png {
-        if let Err(e) = dump_png(dir) {
+        if let Err(e) = dump_png(dir, args.history_dir.clone()) {
             out(&e);
             std::process::exit(1);
         }
@@ -169,7 +172,7 @@ fn main() {
 }
 
 /// 見た目の確認用: 通知のカードを何種類かと、履歴のパネル（今の履歴）を PNG に
-fn dump_png(dir: &std::path::Path) -> Result<(), String> {
+fn dump_png(dir: &std::path::Path, history_dir: Option<PathBuf>) -> Result<(), String> {
     use vwn::toast::{render, Toast};
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let mut fr = Toast::new("join", "Alice", "が参加しました");
@@ -186,7 +189,7 @@ fn dump_png(dir: &std::path::Path) -> Result<(), String> {
         render(&t).save_png(&dir.join(format!("{name}.png")))?;
     }
     let (cfg, _) = Config::load(&config::default_path());
-    let mut h = vwn::history::History::new(cfg.history_dir.clone());
+    let mut h = vwn::history::History::new(history_dir.unwrap_or_else(|| cfg.history_dir.clone()));
     h.load();
     let mut p = vwn::panel::HistoryPanel::new();
     p.set_notify(vwn::toast::Notify::from(&cfg.notify_people));
