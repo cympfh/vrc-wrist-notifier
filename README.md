@@ -39,13 +39,14 @@ systemctl --user enable --now vrc-wrist-notifier    # オン（次からは自�
 systemctl --user disable --now vrc-wrist-notifier   # オフ
 ```
 
-Windows 側（VRChat のログを見る係）は、使うときに PowerShell で起動し、終わったらそのウィンドウで Ctrl+C:
+Windows 側（VRChat のログを見る係）は、インストールするとすぐ起動し、次からはサインインしたときに自動で起動します。
+窓は出ず、タスクバーの右下（通知領域）にアイコンが入ります。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\vrc-wrist-notifier\vrc-wrist-notifier.ps1"
-```
-
-うまくつながったかは、最後に ` -Test` を付けて起動すると、テストのカードが 1 枚出ることで確かめられます。
+- アイコンを右クリックすると、状態の確認、「フレンド一覧を取り直す」「ログを開く」「終了」ができます
+- ふだんは何も言いません。問題があるときだけ、アイコンに黄色の「!」が付き、何が問題かがメニューとツールチップに出ます（例:「⚠ VRCHAT_AUTH_KEY が使えません」「⚠ Frame（frame）に送れません」）
+- 止めたあとでまた動かすには、スタートメニューで `vrc-wrist-notifier` を探すか、`%LOCALAPPDATA%\vrc-wrist-notifier\vrc-wrist-notifier.exe` をダブルクリック（2 つ目は起動しません）
+- アプリ（exe）は GitHub Releases に自動で載ります。インストーラーを貼り直せば、最新の版に置き換わります
+- 自動起動をやめたいときは、タスクマネージャーの「スタートアップ アプリ」で無効にするか、アンインストール
 
 ## 履歴を見る
 

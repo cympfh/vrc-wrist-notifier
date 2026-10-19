@@ -3,20 +3,20 @@
 ## しくみ
 
 ```
-VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-notifier.ps1 (Windows)
+VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-notifier.exe (Windows)
                                                   │ UDP / OSC  /wrist/notify ,sss  kind title text
                                                   ▼
                                     wrist-toast (Steam Frame, port 39570) ──▶ SteamVR オーバーレイ
 ```
 
-- Windows 側: PowerShell 5.1 だけで動きます。最新の `output_log_*.txt` を 0.5 秒ごとに読み足し（共有モードで開くので VRChat の邪魔をしません）、新しいログファイルができたら乗り換えます。起動前の行は通知しません
+- Windows 側（0.5.0 から）: Rust のアプリ 1 つ（`windows/`、窓なし・システムトレイ常駐、二重起動しない）。0.4 までの PowerShell 版と同じふるまい・同じ送り方なので、Frame 側は新旧どちらとも組めます。最新の `output_log_*.txt` を 0.5 秒ごとに読み足し（共有モードで開くので VRChat の邪魔をしません）、新しいログファイルができたら乗り換えます。起動前の行は通知しません
 - Frame 側: C++。cairo + pango（Noto Sans CJK JP）で 640×160 のカードを描き、OpenVR の `SetOverlayRaw` で表示します。`libopenvr_api.so` は SteamVR に入っているものを使います（RUNPATH `/opt/steamvr/bin/linuxarm64`）
 - SteamVR が動いていないあいだは 5 秒ごとにつなぎ直し、届いた通知は捨てます
 
 ## 履歴とダッシュボードのパネル（0.2.0）
 
-- Windows 側は、参加・退出・ワールドの通知に 4〜7 個目の文字列を付けます: 時刻（`yyyy-MM-dd HH:mm:ss`、VRChat のログの時刻＝PC の時刻）、ワールド名、重複を除く鍵（`時刻|種類|名前`）、`quiet`（通知は出さず履歴だけ。ワールドに入った直後の参加など）。時刻の無い通知（`-Test`、0.1.0 の Windows 側）は履歴に残しません
-- 起動時（`backfill_history`）と `-Backfill` で、今ある `output_log_*.txt` から参加・退出・ワールドを `/wrist/history ,sssss 時刻 種類 名前 ワールド 鍵` で送ります（通知は出ない）。同じ鍵は Frame 側で 1 回だけ記録します
+- Windows 側は、参加・退出・ワールドの通知に 4〜7 個目の文字列を付けます: 時刻（`yyyy-MM-dd HH:mm:ss`、VRChat のログの時刻＝PC の時刻）、ワールド名、重複を除く鍵（`時刻|種類|名前`）、`quiet`（通知は出さず履歴だけ。ワールドに入った直後の参加など）。時刻の無い通知（`--test`、0.1.0 の Windows 側）は履歴に残しません
+- 起動時（`backfill_history`）と `--backfill` で、今ある `output_log_*.txt` から参加・退出・ワールドを `/wrist/history ,sssss 時刻 種類 名前 ワールド 鍵` で送ります（通知は出ない）。同じ鍵は Frame 側で 1 回だけ記録します
 - Frame 側は `~/.local/state/vrc-wrist-notifier/history.jsonl` に 1 行 1 件で追記します（`{"t","k","n","w","key"}`）。2 MB を超えたら `history.1.jsonl` に回します（1 世代だけ残すので、合計でおよそ 4 MB まで）。このファイルはリポジトリには入りません
 - パネルは `CreateDashboardOverlay`（キー `cympfh.vrc-wrist-notifier.history`、1200×800 px、幅 2.6 m、マウス入力、`SendVRSmoothScrollEvents`）。wrist-toast が SteamVR につないだときにその場で登録するので、SteamVR の再起動は要りません。wrist-toast が止まるとパネルも消えます
 - 描き直すのはパネルが開いているときだけ。5 秒ごとに `FindOverlay` で自分のパネルが残っているか確かめ、消えていたら作り直します
@@ -26,7 +26,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 ## ワールド名と見張りの様子（0.3.0）
 
 - Windows 側は今いるワールドの名前と ID（`wrld_…` だけ。インスタンスの部分は人の ID が入るので送らない）を覚え、`/wrist/notify` の 8 個目、`/wrist/history` の 6 個目に ID を付けます。古い Frame 側は余分な引数を読まないだけです
-- ワールドはログのファイルごとに数えなおします（VRChat を起動しなおすと新しいファイル）。見張りを途中から始めたときは、今のログファイルを頭から読んで、最後に入ったワールドを覚えます（`-ShowWorld` で同じ読み方の結果だけを表示）
+- ワールドはログのファイルごとに数えなおします（VRChat を起動しなおすと新しいファイル）。見張りを途中から始めたときは、今のログファイルを頭から読んで、最後に入ったワールドを覚えます（`--show-world` で同じ読み方の結果だけを表示）
 - 履歴の 1 行に `"wid"` が増えました（無ければ書かない）。`w` と `wid` が無い古い行も読めます。同じ鍵の記録が来て、前の記録にワールドが無かったときは、ワールドを書き足した行を追記します（読み直すと後の行が勝つ）。過去のログの読み込みで、ワールド不明だった記録が埋まります
 - パネルはワールドに入ったところで区切り、見出しに「入った時刻 〜 最後の出来事の時刻 ・ 来た人数」を出します。ワールドのわからない記録は、前の滞在から 30 分以上あいていたら「（ワールド不明）」として分けます
 - Windows 側は 30 秒ごと（状態が変わったときはすぐ）に `/wrist/heartbeat ,ss 版 ログの状態` を送ります。ログの状態は今のログファイルの中身から判断します: Log / Debug の行があれば `full`、Error / Warning しか無ければ `errors`、まだ何も無ければ `unknown`、VRChat のログが無ければ `nolog`（`-Status` で同じ判断を表示）
@@ -40,7 +40,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - キー（`auth` クッキーの値）は、Windows の環境変数 `VRCHAT_AUTH_KEY`（プロセス → ユーザー）、無ければ `wsl.exe -d <wsl_distro> --exec zsh -lic` で読みます。取り直すときだけ読み、表示・ログ・保存はしません。キーが無い・401 なら、起動しなおすまで自分からは取り直さず、今までどおり動きます
 - `/wrist/notify` の 9 個目、`/wrist/history` の 7 個目が `"1"` ならフレンド。まとめカードでは先頭にフレンドを出し、「名前 さんほか N 人」の名前の部分だけ黄色にします
 - 一覧に無い人が、次に取り直したあとでフレンドだとわかったら、同じ鍵で `/wrist/history` を送り直し、Frame 側で印を書き足します。履歴の 1 行には `"f":"1"` が付きます（フレンドでなければ書かない）。印は消えません
-- `-RefreshFriends` で今すぐ取り直して件数だけ表示。`--dump-png … --friend`（`--self`）でフレンド（自分）のカードを PNG にできます
+- `--refresh-friends`（トレイの「フレンド一覧を取り直す」）で今すぐ取り直して件数だけ表示。`--dump-png … --friend`（`--self`）でフレンド（自分）のカードを PNG にできます
 
 ## 通知する人（0.4.1）
 
@@ -111,10 +111,29 @@ frame/build.sh /tmp/wrist-toast && /tmp/wrist-toast --self-test       # Frame �
 /tmp/wrist-toast --dump-png /tmp/t.png --kind invite --title 名前 --text 本文   # SteamVR なしで見た目を確認
 ```
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tests\run-windows-tests.ps1   # 合成ログで検出結果を確認
-powershell -ExecutionPolicy Bypass -File windows\vrc-wrist-notifier.ps1 -Replay tests\sample_output_log.txt -DryRun
+```sh
+cd windows && cargo test                                        # 合成ログ（tests/）で検出結果を確認（Linux / WSL でも回る）
+cargo build --release --target x86_64-pc-windows-gnu            # WSL で Windows の exe を作る（mingw-w64 が要る）
 ```
+
+```powershell
+vrc-wrist-notifier.exe --replay tests\sample_output_log.txt --dry-run | Out-String   # 送らずに検出結果だけ表示
+vrc-wrist-notifier.exe --test | Out-String                  # テスト通知を 1 件（ほか --backfill / --show-world / --status / --refresh-friends）
+$env:VRC_WRIST_EXE = "…\vrc-wrist-notifier.exe"; .\windows\install.ps1   # 手元でビルドした exe をインストール
+```
+
+トレイのアプリなので、PowerShell から表示を見るときは `| Out-String` を付けます（付けないと終わるのを待たずに戻ります）。
+動作ログは `%LOCALAPPDATA%\vrc-wrist-notifier\vrc-wrist-notifier.log`（1 MB で `.log.old` に回す。キーは書きません）。
+
+## Windows 側のアプリ（0.5.0）
+
+- `windows/src/watcher.rs`: ログの解析・まとめ・フレンド・heartbeat（OS に依らない。テストはここを通す）。`windows/src/tray.rs`: トレイ。`windows/src/friends_api.rs`: キーを読んで `/auth/user` を 1 回呼ぶ
+- トレイの表示は問題があるときだけ: Frame に送れない（ホスト名が引けないなど）、VRChat のログ出力が Full でない、`VRCHAT_AUTH_KEY` 未設定・使えない。何も無ければツールチップは名前だけ。UDP なので「Frame が受け取ったか」まではわかりません（それは Frame 側の「Windows 側の見張りが止まっています」が受け持つ）
+- 「フレンド一覧を取り直す」は、キーが効かなかった印も消して 1 回だけ取り直します（キーを新しくしたあと、起動しなおさずに試せる）
+- アイコンは Frame 側のダッシュボードのアイコンと同じ絵（`windows/assets/icon.png` は `wrist-toast --dump-thumbnail-png` の出力、`make-icons.py` で .ico とトレイ用を作る。問題があるときは同じ絵に黄色の「!」）
+- 自動起動はスタートアップのショートカット `vrc-wrist-notifier.lnk`（install.ps1 が作る）。二重起動は名前付きミューテックス `Local\vrc-wrist-notifier` で防ぎます
+- リリース: `v*` のタグを push すると GitHub Actions（`.github/workflows/windows-release.yml`）が Ubuntu で `x86_64-pc-windows-gnu` にビルドし、`cargo test` のあと、そのタグのリリースに `vrc-wrist-notifier.exe` と `SHA256SUMS` を載せます（リリースが既にあれば差し替え。ノートは CHANGELOG.md にその版の節があればそれ、無ければ自動生成）。タグと `windows/Cargo.toml` の version が違うと止まります。Actions の画面から手で動かす（workflow_dispatch）と、ビルドとテストだけ。Frame 側は端末の上でビルドするので扱いません
+- インストーラーは GitHub Releases の `vrc-wrist-notifier.exe`（あれば `SHA256SUMS` で確かめる）を置きます。0.4 までの PowerShell 版が動いていれば止め、`vrc-wrist-notifier.cmd`（自動起動）と `vrc-wrist-notifier.ps1` を片付けます
 
 `tests/sample_output_log.txt`、`tests/sample_history_log.txt`、`tests/sample_world_log.txt` は形式だけまねた合成データです（実在の人やワールドは入っていません）。
 
