@@ -137,3 +137,15 @@ fn config_defaults_and_unknown_keys() {
     assert_eq!(c.friends_refresh_minutes, 60.0);
     assert_eq!(warn, vec!["知らない設定項目 bogus は無視します".to_string()]);
 }
+
+#[test]
+fn self_leave_teardown() {
+    // 自分がワールドを出たとき（OnLeftRoom → 全員分の OnPlayerLeft → 自分 → Entering Room）や VRChat を終えたときの
+    // 他人の退出は出さない（通知も履歴も）。自分がいるあいだの他人の退出（Ann, 2 つ目のワールドの Bob）はそのまま
+    let d = tmpdir("teardown");
+    place(&d, "sample_teardown_log.txt", "output_log_2026-01-07_21-00-00.txt", 1_767_800_000);
+    check(replay(config(&d, serde_json::json!({})), "sample_teardown_log.txt"), "expected_teardown.tsv");
+    let mut w = Watcher::new(config(&d, serde_json::json!({})), true);
+    w.backfill();
+    check(w.take_output(), "expected_teardown_history.tsv");
+}

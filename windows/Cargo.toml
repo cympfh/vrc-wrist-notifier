@@ -1,6 +1,6 @@
 [package]
 name = "vrc-wrist-notifier"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "MIT"
 description = "VRChat のログを読んで Steam Frame の wrist-toast に通知を送る（Windows 側、システムトレイ常駐）"

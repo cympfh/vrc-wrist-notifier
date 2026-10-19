@@ -80,6 +80,8 @@ VRChat のログ出力を Full にすると出る行です（形式は [VRCX](ht
 | ワールド ID | `[Behaviour] Destination set: wrld_…:…`（入る前）、`[Behaviour] Joining wrld_…:…`（今の VRChat は入った直後、古いログは入る前） |
 | 招待など | `[API] Received Notification: <Notification from username:名前, sender user id:usr_… to … of type: invite, id: not_…, …>` |
 
+自分がワールドを出るとき（ワールドの移動・インスタンスを出る）、VRChat は `Destination set` → `OnLeftRoom` → そこにいた全員の `OnPlayerLeft`（自分は最後）→ `Entering Room` の順に書きます。`OnLeftRoom`（と `VRCApplication: HandleApplicationQuit`）から次の `Entering Room` までの他人の `OnPlayerLeft` は片付けなので、通知も履歴もしません（0.5.1）。履歴には自分の退出だけが残り、それが「自分がワールドを出た」印になります。自分がいるあいだの他人の退出はそのまま。
+
 通知の種類は `invite` / `requestInvite` / `friendRequest` を出し、それ以外は `notify_other` で切り替えます。同じ `not_…` は 1 回だけ出します。
 
 ## 設定

@@ -1,0 +1,22 @@
+2026.01.07 20:59:50 Debug      -  [Behaviour] User Authenticated: Me (usr_00000000-0000-0000-0000-000000000900)
+2026.01.07 21:00:00 Debug      -  [Behaviour] Destination set: wrld_00000000-0000-0000-0000-0000000000c1:111~friends(usr_00000000-0000-0000-0000-000000000900)~region(jp)
+2026.01.07 21:00:01 Debug      -  [Behaviour] Entering Room: World A
+2026.01.07 21:00:01 Debug      -  [Behaviour] Joining wrld_00000000-0000-0000-0000-0000000000c1:111~friends(usr_00000000-0000-0000-0000-000000000900)~region(jp)
+2026.01.07 21:00:05 Debug      -  [Behaviour] OnPlayerJoined Me (usr_00000000-0000-0000-0000-000000000900)
+2026.01.07 21:01:00 Debug      -  [Behaviour] OnPlayerJoined Ann (usr_00000000-0000-0000-0000-000000000901)
+2026.01.07 21:02:00 Debug      -  [Behaviour] OnPlayerJoined Bob (usr_00000000-0000-0000-0000-000000000902)
+2026.01.07 21:03:00 Debug      -  [Behaviour] OnPlayerJoined Cat (usr_00000000-0000-0000-0000-000000000903)
+2026.01.07 21:05:00 Debug      -  [Behaviour] OnPlayerLeft Ann (usr_00000000-0000-0000-0000-000000000901)
+2026.01.07 21:10:00 Debug      -  [Behaviour] Destination set: wrld_00000000-0000-0000-0000-0000000000c2:222~hidden(usr_00000000-0000-0000-0000-000000000900)~region(jp)
+2026.01.07 21:10:01 Debug      -  [Behaviour] OnLeftRoom
+2026.01.07 21:10:01 Debug      -  [Behaviour] OnPlayerLeft Bob (usr_00000000-0000-0000-0000-000000000902)
+2026.01.07 21:10:01 Debug      -  [Behaviour] OnPlayerLeft Cat (usr_00000000-0000-0000-0000-000000000903)
+2026.01.07 21:10:01 Debug      -  [Behaviour] OnPlayerLeft Me (usr_00000000-0000-0000-0000-000000000900)
+2026.01.07 21:10:02 Debug      -  [Behaviour] Entering Room: World B
+2026.01.07 21:10:02 Debug      -  [Behaviour] Joining wrld_00000000-0000-0000-0000-0000000000c2:222~hidden(usr_00000000-0000-0000-0000-000000000900)~region(jp)
+2026.01.07 21:10:10 Debug      -  [Behaviour] OnPlayerJoined Bob (usr_00000000-0000-0000-0000-000000000902)
+2026.01.07 21:10:10 Debug      -  [Behaviour] OnPlayerJoined Me (usr_00000000-0000-0000-0000-000000000900)
+2026.01.07 21:12:00 Debug      -  [Behaviour] OnPlayerJoined Dan (usr_00000000-0000-0000-0000-000000000904)
+2026.01.07 21:13:00 Debug      -  [Behaviour] OnPlayerLeft Bob (usr_00000000-0000-0000-0000-000000000902)
+2026.01.07 21:14:00 Debug      -  VRCApplication: HandleApplicationQuit at 900.5
+2026.01.07 21:14:00 Debug      -  [Behaviour] OnPlayerLeft Dan (usr_00000000-0000-0000-0000-000000000904)
