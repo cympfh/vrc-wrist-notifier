@@ -23,7 +23,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - `VREvent_Quit` を受けたら `VR_Shutdown` して離れ、その `vrserver.exe` の PID が残っているあいだはつなぎ直さない（別の PID が出たらすぐつなぐ）。トレイのアプリはそのまま動き続ける
 - つながっているあいだも 3 秒ごとに `vrserver.exe` の PID を確かめ、消えていたら（落ちた）死んだ接続には何も呼ばずに手放して、また待つ
 - SteamVR が動いていないあいだの通知は捨てる（履歴には残る）
-- 通知: オーバーレイ `cympfh.vrc-wrist-notifier`。頭（デバイス 0）からの相対で、前 `toast_distance_m`、下 `toast_y_m`、幅 `toast_width_m`。`toast_seconds`（急ぎは 1.5 倍）、前後 0.4 秒でフェード。画像は作りっぱなしの D3D11 テクスチャ 2 枚を交互に書き換えて `SetOverlayTexture`（`windows/src/d3d.rs`、SteamVR の GPU は `GetDXGIOutputInfo`。中身が前と同じなら渡さない）。`SetOverlayRaw` は渡すたびに SteamVR 側でテクスチャを作り直すので、見えているパネルに渡すと一瞬透明になってちらつく（0.6.0 の不具合）。D3D11 が使えないときだけの予備（0.6.1）
+- 通知: オーバーレイ `cympfh.vrc-wrist-notifier`。頭（デバイス 0）からの相対で、前 `toast_distance_m`、下 `toast_y_m`、幅 `toast_width_m`。`toast_seconds`（急ぎは 1.5 倍）、前後 0.4 秒でフェード。画像はオーバーレイごとに作りっぱなしの D3D11 テクスチャ 1 枚を書き換えて `SetOverlayTexture`、その後で `Flush`（`windows/src/d3d.rs`。SteamVR はこちらの即時コンテキストにコピーを積むため。openvr #1484 / #1353。SteamVR の GPU は `GetDXGIOutputInfo`。中身が前と同じなら渡さない）。0.6.0 は `SetOverlayRaw` で、見えているパネルに渡すと一瞬透明になってちらつくのが見えた（渡すたびに SteamVR 側でテクスチャを作り直しているためと推測）。`SetOverlayTexture` が失敗した回だけ `SetOverlayRaw`、3 回続けて失敗するかデバイスが失われたら D3D11 をやめて `SetOverlayRaw` に切り替える（判断は `windows/src/upload.rs`、0.6.1）
 - パネル: `CreateDashboardOverlay`（キー `cympfh.vrc-wrist-notifier.history`、名前「入退室の履歴」、幅 `panel_width_m`、マウス入力、`SendVRSmoothScrollEvents`）。サムネイルは `windows/assets/icon.png`（トレイ・exe と同じ絵）。マウスの y は左下が原点なので反転する。描き直すのは開いているときだけ。5 秒ごとに `FindOverlay` で残っているか確かめ、消えていたら作り直す
 - .vrmanifest は登録しない（SteamVR から起動させる必要がない。自動起動はサインイン時のスタートアップのショートカット）
 

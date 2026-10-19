@@ -8,6 +8,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use crate::d3d::{Gpu, Surface};
+use vwn::upload::{should_upload, Next, TexturePath};
 use vwn::config::Config;
 use vwn::hub::Hub;
 use vwn::logf;
@@ -276,6 +277,10 @@ struct Session {
     gpu: Option<Gpu>,
     toast_sf: Option<Surface>,
     panel_sf: Option<Surface>,
+    tex_path: TexturePath,
+    /// 最後に渡した中身（同じなら渡さない）
+    toast_last: Vec<u8>,
+    panel_last: Vec<u8>,
 }
 
 impl Session {
@@ -294,6 +299,7 @@ impl Session {
         let mut s = Session {
             api, pid, toast, panel: INVALID, thumb: INVALID, panel_visible: false, panel_version: None, panel_dirty: true,
             checked_at: Instant::now(), alive_at: Instant::now(), showing: None, gpu: None, toast_sf: None, panel_sf: None,
+            tex_path: TexturePath::default(), toast_last: Vec::new(), panel_last: Vec::new(),
         };
         if cfg.history_panel {
             s.make_panel(cfg, strict);
@@ -329,9 +335,7 @@ impl Session {
                 self.api.raw(t, &mut icon.0, icon.1, icon.2);
                 self.panel_dirty = true;
                 self.panel_version = None;
-                if let Some(sf) = self.panel_sf.as_mut() {
-                    sf.forget_last(); // 作り直したパネルには、同じ絵でも渡しなおす
-                }
+                self.panel_last.clear(); // 作り直したパネルには、同じ絵でも渡しなおす
             }
             Err(e) if !quiet => logf!("ダッシュボードのパネルを作れません（{e}）"),
             Err(_) => {}
@@ -415,31 +419,60 @@ impl Session {
     }
 
     /// 絵を渡す（panel = true ならパネル、false なら通知）。前と同じ中身なら何もしないで 0。
-    /// D3D11 が使えるときは 2 枚のテクスチャを交互に書き換えて SetOverlayTexture（作り直さないのでちらつかない）
+    /// D3D11 が使えるときは作りっぱなしのテクスチャを書き換えて SetOverlayTexture → Flush（ちらつかない）。
+    /// 失敗したらその回は SetOverlayRaw。続けて失敗する・デバイスが失われたら、D3D11 をやめてずっと SetOverlayRaw
     fn upload(&mut self, panel: bool, rgba: &mut [u8], w: u32, h: u32) -> i32 {
+        let last = if panel { &self.panel_last } else { &self.toast_last };
+        if !should_upload(last, rgba) {
+            return 0;
+        }
         let ov = if panel { self.panel } else { self.toast };
+        let mut done = None;
+        let mut give_up = false;
         if let Some(gpu) = &self.gpu {
             let slot = if panel { &mut self.panel_sf } else { &mut self.toast_sf };
             if slot.is_none() {
-                match gpu.surface(w, h) {
-                    Ok(sf) => *slot = Some(sf),
-                    Err(e) => logf!("テクスチャを作れません: {e}"),
-                }
+                *slot = gpu.surface(w, h).map_err(|e| logf!("テクスチャを作れません: {e}")).ok();
             }
-            if let Some(sf) = slot.as_mut() {
-                return match sf.write(gpu, rgba) {
-                    Some(tex) => {
-                        let e = self.api.texture(ov, tex);
-                        if e != 0 {
-                            sf.forget_last();
-                        }
-                        e
-                    }
-                    None => 0,
-                };
+            let e = match slot.as_ref().map(|sf| sf.write(gpu, rgba, w, h)) {
+                Some(Ok(tex)) => {
+                    let e = self.api.texture(ov, tex);
+                    gpu.flush(); // SteamVR はこの後でコピーするので、渡してから流す
+                    e
+                }
+                Some(Err(e)) => {
+                    logf!("{e}");
+                    -1
+                }
+                None => -1,
+            };
+            match self.tex_path.record(e == 0, gpu.removed()) {
+                Next::Ok => done = Some(0),
+                Next::RawThisTime => {}
+                Next::GiveUp => give_up = true,
             }
         }
-        self.api.raw(ov, rgba, w, h)
+        if give_up {
+            logf!("SetOverlayRaw に切り替えます（ちらつきます）");
+            self.drop_gpu();
+        }
+        let e = match done {
+            Some(e) => e,
+            None => self.api.raw(ov, rgba, w, h),
+        };
+        if e == 0 {
+            let last = if panel { &mut self.panel_last } else { &mut self.toast_last };
+            last.clear();
+            last.extend_from_slice(rgba);
+        }
+        e
+    }
+
+    /// テクスチャとデバイスを手放す（SteamVR がつながっていなくても安全に消せる）
+    fn drop_gpu(&mut self) {
+        self.toast_sf = None;
+        self.panel_sf = None;
+        self.gpu = None;
     }
 
     fn show_toast(&mut self, t: &Toast, cfg: &Config) {
@@ -532,7 +565,11 @@ pub fn run(cfg: Config, cfg_path: PathBuf, rx: Receiver<Out>, status: Arc<Mutex<
                 if vrserver_pid() != Some(s.pid) {
                     logf!("SteamVR が落ちたので離れます");
                     // 死んだ接続には何も呼ばない（止まるかもしれないので、後片付けをせずに手放す）
-                    std::mem::forget(session.take());
+                    // D3D11 のものは SteamVR と関係なく消せるので、先に取り出して普通に消す（落ちるたびに漏らさない）
+                    if let Some(mut dead) = session.take() {
+                        dead.drop_gpu();
+                        std::mem::forget(dead);
+                    }
                     checked = None;
                 }
             }

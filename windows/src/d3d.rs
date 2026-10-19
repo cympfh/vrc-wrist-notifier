@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 //! オーバーレイに絵を渡すための D3D11 のテクスチャ（Windows だけ）。
-//! SetOverlayRaw は渡すたびに SteamVR の中でテクスチャを作り直すので、見えているオーバーレイに渡すと一瞬透明になる（ちらつく）。
-//! そこで、オーバーレイごとに作りっぱなしのテクスチャを 2 枚持ち、交互に中身を書き換えて SetOverlayTexture で渡す
-//! （SteamVR がまだ前の 1 枚を読んでいても、書き換えるのはもう 1 枚のほう）。
+//! SetOverlayRaw で見えているオーバーレイに渡すと一瞬透明になる（ちらつく）のが見えたので、オーバーレイごとに作りっぱなしの
+//! テクスチャを 1 枚持ち、中身を書き換えて SetOverlayTexture で渡す。SteamVR はこちらのデバイスの即時コンテキストに
+//! コピーを積むので、SetOverlayTexture の後で Flush する（openvr #1484 / #1353）。コピーされるので 1 枚で足りる。
 use std::ffi::c_void;
 use windows::core::Interface;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BIND_SHADER_RESOURCE,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_FLAG,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1};
@@ -29,14 +29,15 @@ impl Gpu {
             });
             let driver = if ad.is_some() { D3D_DRIVER_TYPE_UNKNOWN } else { D3D_DRIVER_TYPE_HARDWARE };
             let (mut device, mut ctx) = (None, None);
-            D3D11CreateDevice(ad.as_ref(), driver, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION,
+            // RGBA のテクスチャを書き換えるだけなので、BGRA 対応などのフラグは要らない
+            D3D11CreateDevice(ad.as_ref(), driver, HMODULE::default(), D3D11_CREATE_DEVICE_FLAG(0), None, D3D11_SDK_VERSION,
                               Some(&mut device), None, Some(&mut ctx))
                 .map_err(|e| format!("D3D11CreateDevice: {e}"))?;
             Ok(Gpu { device: device.ok_or("D3D11 のデバイスがありません")?, ctx: ctx.ok_or("D3D11 のコンテキストがありません")? })
         }
     }
 
-    fn texture(&self, w: u32, h: u32) -> Result<ID3D11Texture2D, String> {
+    pub fn surface(&self, w: u32, h: u32) -> Result<Surface, String> {
         let desc = D3D11_TEXTURE2D_DESC {
             Width: w,
             Height: h,
@@ -51,41 +52,34 @@ impl Gpu {
         };
         let mut t = None;
         unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut t)) }.map_err(|e| format!("CreateTexture2D: {e}"))?;
-        t.ok_or_else(|| "CreateTexture2D".into())
+        Ok(Surface { tex: t.ok_or("CreateTexture2D")?, w, h })
     }
 
-    pub fn surface(&self, w: u32, h: u32) -> Result<Surface, String> {
-        Ok(Surface { tex: [self.texture(w, h)?, self.texture(w, h)?], next: 0, w, h, last: Vec::new() })
+    /// SetOverlayTexture の後に呼ぶ（SteamVR が積んだコピーをすぐ流す）
+    pub fn flush(&self) {
+        unsafe { self.ctx.Flush() };
+    }
+
+    /// デバイスが失われていれば true（GPU のリセット・ドライバの更新など）
+    pub fn removed(&self) -> bool {
+        unsafe { self.device.GetDeviceRemovedReason() }.is_err()
     }
 }
 
-/// 1 つのオーバーレイ用の 2 枚のテクスチャ（作ったら最後まで同じものを使う。大きさも変えない）
+/// 1 つのオーバーレイ用のテクスチャ（作ったら最後まで同じものを使う。大きさも変えない）
 pub struct Surface {
-    tex: [ID3D11Texture2D; 2],
-    next: usize,
-    pub w: u32,
-    pub h: u32,
-    /// 最後に渡した中身（同じなら渡さない）
-    last: Vec<u8>,
+    tex: ID3D11Texture2D,
+    w: u32,
+    h: u32,
 }
 
 impl Surface {
-    /// rgba（w×h、乗算していない RGBA）を次の 1 枚に書き、そのテクスチャのポインタを返す。前と同じ中身なら None
-    pub fn write(&mut self, gpu: &Gpu, rgba: &[u8]) -> Option<*mut c_void> {
-        if rgba.len() != (self.w * self.h * 4) as usize || rgba == self.last.as_slice() {
-            return None;
+    /// rgba（w×h、乗算していない RGBA）で中身を書き換え、テクスチャのポインタを返す
+    pub fn write(&self, gpu: &Gpu, rgba: &[u8], w: u32, h: u32) -> Result<*mut c_void, String> {
+        if (w, h) != (self.w, self.h) || rgba.len() != (w * h * 4) as usize {
+            return Err(format!("大きさが違います（{w}×{h}、テクスチャは {}×{}）", self.w, self.h));
         }
-        let t = &self.tex[self.next];
-        unsafe {
-            gpu.ctx.UpdateSubresource(t, 0, None, rgba.as_ptr() as *const c_void, self.w * 4, 0);
-            gpu.ctx.Flush(); // SteamVR が読む前に書き終わっているように
-        }
-        self.next ^= 1;
-        self.last.clear();
-        self.last.extend_from_slice(rgba);
-        Some(t.as_raw())
-    }
-    pub fn forget_last(&mut self) {
-        self.last.clear();
+        unsafe { gpu.ctx.UpdateSubresource(&self.tex, 0, None, rgba.as_ptr() as *const c_void, w * 4, 0) };
+        Ok(self.tex.as_raw())
     }
 }
