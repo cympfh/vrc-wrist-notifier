@@ -34,7 +34,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.4.3";
+static const char* kVersion = "0.4.4";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -632,6 +632,19 @@ static int self_test() {
         check(HistoryPanel::notify_from(HistoryPanel::notify_name(HistoryPanel::NotifyFriends)) == HistoryPanel::NotifyFriends &&
                   HistoryPanel::notify_from("???") == HistoryPanel::NotifyAll,
               "通知する人の名前と値の行き来");
+        WatchStatus ks;
+        ks.watcher = WatchStatus::On;
+        ks.friends = "nokey";
+        bool k1 = HistoryPanel::key_problem(ks) && std::string(HistoryPanel::key_problem(ks)) == "VRCHAT_AUTH_KEY 未設定";
+        ks.friends = "bad";
+        bool k2 = HistoryPanel::key_problem(ks) && std::string(HistoryPanel::key_problem(ks)) == "VRCHAT_AUTH_KEY が使えません";
+        ks.friends = "ok";
+        bool k3 = !HistoryPanel::key_problem(ks);
+        ks.friends = "";   // 古い Windows 側
+        bool k4 = !HistoryPanel::key_problem(ks);
+        ks.friends = "nokey"; ks.watcher = WatchStatus::Off;
+        bool k5 = !HistoryPanel::key_problem(ks);
+        check(k1 && k2 && k3 && k4 && k5, "キーの注意は未設定・使えないときだけ（問題が無い・わからないときは出さない）");
         printf("（テスト用の一時ファイル: %s。消していません）\n", dir.c_str());
     }
     printf("%s\n", fails ? "自己テスト失敗" : "自己テスト OK");

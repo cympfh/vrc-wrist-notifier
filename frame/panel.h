@@ -144,6 +144,7 @@ public:
         static const char* labels[] = {"すべて", "参加", "退出"};
         for (int i = 0; i < 3; i++) button(cr, i, labels[i], filter_ == i);
         if (scroll_ > 1) button(cr, kTopButton, "↑ 最新", false);
+        draw_key_note(cr);
 
         cairo_destroy(cr);
         std::vector<uint8_t> px = draw::to_rgba(s);
@@ -241,14 +242,35 @@ private:
         if (notify_ == NotifyFriends) {
             const std::string& f = status_.friends;
             if (status_.watcher != WatchStatus::On) note = "Windows 側の見張りを待っています";
-            else if (f == "nokey") note = "⚠ VRCHAT_AUTH_KEY が無いので、フレンドがわかりません（履歴には全員残ります）";
-            else if (f == "bad") note = "⚠ VRCHAT_AUTH_KEY が切れています。作り直してください（履歴には全員残ります）";
+            // キーが未設定・使えないときは、パネルの右下の注意（draw_key_note）だけで知らせる
             else if (f == "off") note = "⚠ Windows 側でフレンドの判定がオフです（履歴には全員残ります）";
             else if (f == "none") note = "フレンド一覧を取得中です（履歴には全員残ります）";
             else if (f.empty()) note = "⚠ Windows 側を 0.4.1 以降にするとフレンドがわかります";
             if (note.rfind("⚠", 0) == 0) nc = {1.0, 0.72, 0.25};
         } else if (notify_ == NotifyOff) note = "通知はすべて止まります（履歴には全員残ります）";
         draw::text(cr, font_, note, "Regular", 20, hx, ny, kW - int(hx) - 30, nc);
+    }
+
+public:
+    // VRCHAT_AUTH_KEY に問題があるときだけ、右下の隅に小さく出す（問題が無ければ何も出さない）
+    static const char* key_problem(const WatchStatus& st) {
+        if (st.watcher != WatchStatus::On) return nullptr;
+        if (st.friends == "nokey") return "VRCHAT_AUTH_KEY 未設定";
+        if (st.friends == "bad") return "VRCHAT_AUTH_KEY が使えません";
+        return nullptr;
+    }
+
+private:
+    void draw_key_note(cairo_t* cr) {
+        const char* msg = key_problem(status_);
+        if (!msg) return;
+        std::string text = std::string("⚠ ") + msg;
+        int w = draw::text(cr, font_, text, "Regular", 18, -10000, -10000, 0, {0, 0, 0});   // 幅を測るだけ
+        double bw = w + 32, bh = 38, bx = kW - bw - 30, by = kH - bh - 16;
+        cairo_set_source_rgba(cr, 0.16, 0.12, 0.05, 0.92);
+        draw::rounded(cr, bx, by, bw, bh, bh / 2);
+        cairo_fill(cr);
+        draw::text(cr, font_, text, "Regular", 18, bx + 16, by + bh / 2, 0, {1.0, 0.72, 0.25});
     }
 
     static int row_h(const Row& r) { return r.type == Row::Day ? 70 : r.type == Row::World ? 72 : 60; }
