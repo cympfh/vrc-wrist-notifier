@@ -17,8 +17,9 @@ struct WatchStatus {
     std::string version;
     std::string log;   // VRChat のログ出力: full / errors / unknown（まだ出ていない）/ nolog（VRChat のログが無い）
     std::string friends;   // フレンド一覧（0.4.1 から）: ok / nokey / bad / none（まだ無い）/ off。空なら古い Windows 側
+    bool down = false;     // 見張りの知らせが heartbeat 3 回分（90 秒）来ていない（起動直後の 90 秒は待つ）
     bool operator==(const WatchStatus& o) const {
-        return watcher == o.watcher && version == o.version && log == o.log && friends == o.friends;
+        return watcher == o.watcher && version == o.version && log == o.log && friends == o.friends && down == o.down;
     }
 };
 
@@ -144,7 +145,7 @@ public:
         static const char* labels[] = {"すべて", "参加", "退出"};
         for (int i = 0; i < 3; i++) button(cr, i, labels[i], filter_ == i);
         if (scroll_ > 1) button(cr, kTopButton, "↑ 最新", false);
-        draw_key_note(cr);
+        draw_corner_note(cr);
 
         cairo_destroy(cr);
         std::vector<uint8_t> px = draw::to_rgba(s);
@@ -241,8 +242,8 @@ private:
         draw::Rgb nc{0.6, 0.63, 0.68};
         if (notify_ == NotifyFriends) {
             const std::string& f = status_.friends;
-            if (status_.watcher != WatchStatus::On) note = "Windows 側の見張りを待っています";
-            // キーが未設定・使えないときは、パネルの右下の注意（draw_key_note）だけで知らせる
+            // 見張りが止まっている・キーが未設定・使えないときは、パネルの右下の注意（draw_corner_note）だけで知らせる
+            if (status_.watcher != WatchStatus::On) {}
             else if (f == "off") note = "⚠ Windows 側でフレンドの判定がオフです（履歴には全員残ります）";
             else if (f == "none") note = "フレンド一覧を取得中です（履歴には全員残ります）";
             else if (f.empty()) note = "⚠ Windows 側を 0.4.1 以降にするとフレンドがわかります";
@@ -252,8 +253,10 @@ private:
     }
 
 public:
-    // VRCHAT_AUTH_KEY に問題があるときだけ、右下の隅に小さく出す（問題が無ければ何も出さない）
-    static const char* key_problem(const WatchStatus& st) {
+    // 問題があるときだけ、右下の隅に小さく出す（問題が無ければ何も出さない）。
+    // 見張りが止まっているときは、キーの様子はわからないので見張りのことだけ
+    static const char* corner_note(const WatchStatus& st) {
+        if (st.down) return "Windows 側の見張りが止まっています";
         if (st.watcher != WatchStatus::On) return nullptr;
         if (st.friends == "nokey") return "VRCHAT_AUTH_KEY 未設定";
         if (st.friends == "bad") return "VRCHAT_AUTH_KEY が使えません";
@@ -261,9 +264,10 @@ public:
     }
 
 private:
-    void draw_key_note(cairo_t* cr) {
-        const char* msg = key_problem(status_);
+    void draw_corner_note(cairo_t* cr) {
+        const char* msg = corner_note(status_);
         if (!msg) return;
+        if (status_.down && rows_.empty()) return;   // 履歴が無いときは、真ん中の「Windows 側の見張り：動いていません」が同じことを言う
         std::string text = std::string("⚠ ") + msg;
         int w = draw::text(cr, font_, text, "Regular", 18, -10000, -10000, 0, {0, 0, 0});   // 幅を測るだけ
         double bw = w + 32, bh = 38, bx = kW - bw - 30, by = kH - bh - 16;
