@@ -1,7 +1,7 @@
 # vrc-wrist-notifier
 
 VRChat で **だれかが来た・帰った、ワールドを移動した、招待やフレンド申請が届いた** ときに、
-Steam Frame の視界に小さなカードを数秒だけ出します。メニューを開かなくても気づけます。
+VR の視界に小さなカードを数秒だけ出します。メニューを開かなくても気づけます。
 
 ![表示の例](docs/toast-join.png)
 ![表示の例](docs/toast-invite.png)
@@ -10,89 +10,70 @@ Steam Frame の視界に小さなカードを数秒だけ出します。メニ�
 
 ![入退室の履歴](docs/history.png)
 
-VRChat の auth クッキーを環境変数 `VRCHAT_AUTH_KEY` に入れておくと、**フレンドの名前が黄色** になります（一覧は 1 時間に 1 回まで取りに行きます。無くても、ほかは今までどおり使えます）。
-キーは Windows の環境変数を先に見て、無ければ WSL Ubuntu の zsh から読みます。キーはファイルにもログにも残しません。手元に残すのは `%LOCALAPPDATA%\vrc-wrist-notifier\friends.json`（取った時刻とフレンド・自分の ID だけ）です。
-ダッシュボードの「入退室の履歴」で、通知を **全員 / フレンドのみ / オフ** から選べます（オフならすべての通知が止まります。履歴には全員残ります）。
-
-VRChat を動かす Windows PC と Steam Frame の両方に入れます（同じ家の LAN の中だけで通信します）。
+VRChat を動かしている Windows PC に入れるだけです（SteamVR で表示するので、Steam Frame などにはストリーミングでそのまま届きます）。
+配るのは `vrc-wrist-notifier.exe` 1 つだけです。
 
 ## インストール
 
-**Steam Frame**: Konsole に貼り付けて Enter
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/frame/install.sh | bash
-```
-
-**Windows PC**: PowerShell に貼り付けて Enter
+PowerShell に貼り付けて Enter:
 
 ```powershell
 irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/install.ps1 | iex
 ```
 
-## オン・オフ
+すぐに起動し、次からはサインインしたときに自動で起動します。窓は出ず、タスクバーの右下（通知領域）にアイコンが入ります。
 
-Frame 側（表示する係）:
-
-```sh
-systemctl --user enable --now vrc-wrist-notifier    # オン（次からは自動で起動）
-systemctl --user disable --now vrc-wrist-notifier   # オフ
-```
-
-Windows 側（VRChat のログを見る係）は、インストールするとすぐ起動し、次からはサインインしたときに自動で起動します。
-窓は出ず、タスクバーの右下（通知領域）にアイコンが入ります。
-
-- アイコンを右クリックすると、状態の確認、「フレンド一覧を取り直す」「ログを開く」「終了」ができます
-- ふだんは何も言いません。問題があるときだけ、アイコンに黄色の「!」が付き、何が問題かがメニューとツールチップに出ます（例:「⚠ VRCHAT_AUTH_KEY が使えません」「⚠ Frame（frame）に送れません」）
-- 止めたあとでまた動かすには、スタートメニューで `vrc-wrist-notifier` を探すか、`%LOCALAPPDATA%\vrc-wrist-notifier\vrc-wrist-notifier.exe` をダブルクリック（2 つ目は起動しません）
-- アプリ（exe）は GitHub Releases に自動で載ります。インストーラーを貼り直せば、最新の版に置き換わります
-- 自動起動をやめたいときは、タスクマネージャーの「スタートアップ アプリ」で無効にするか、アンインストール
-
-## 履歴を見る
-
-Frame 側が動いているあいだ、SteamVR のダッシュボード（メニューボタン）の下の並びに **「入退室の履歴」** のアイコンが出ます。
-選ぶと、新しい順の一覧が開きます。ワールドごとにまとまっていて、ワールド名の横に、いた時間と来た人の数が出ます。
-上の「すべて・参加・退出」で絞り込み、スティックかドラッグでスクロールできます。
-
-履歴がまだ無いときは、準備が済んでいるかを表示します（「Windows 側の見張り：設定済み」のように）。済んでいないものだけ、何をすればよいかが出ます。
-
-- 履歴は Frame の中（`~/.local/state/vrc-wrist-notifier/`）だけに保存されます。人の名前が入るので、どこにも送りません
-- Windows 側を起動すると、PC に残っている VRChat のログからも履歴を読み込みます（同じものは 1 回だけ。前の版でワールドがわからなかった記録も、ここで埋まります）
+手で入れたいときは、[Releases](https://github.com/cympfh/vrc-wrist-notifier/releases/latest) から `vrc-wrist-notifier.exe` をダウンロードして、好きな場所でダブルクリックしてもかまいません（自動起動はしません）。
 
 ## VRChat の準備
 
-- VRChat のクイックメニュー → 設定 → **Debug**（デバッグ）のログ出力を **Full** にする。Errors Only のままだと、参加・退出が記録されないので通知できません
-- OSC の設定は要りません（VRChat のログファイルを読むだけ）
-- Frame のホスト名が `frame` でないときは `%APPDATA%\vrc-wrist-notifier\config.json` の `frame_host` に Frame の名前か IP を書く
+VRChat のクイックメニュー → 設定 → **Debug**（デバッグ）のログ出力を **Full** にしてください。
+Errors Only のままだと参加・退出がログに出ないので、通知できません。OSC の設定は要りません。
+
+## 使い方
+
+- SteamVR が動いているあいだだけ表示します。SteamVR を自分から起動することはありません
+- ダッシュボード（メニューボタン）の下の並びの **「入退室の履歴」** で、新しい順の一覧が見られます。ワールドごとにまとまっています
+- 一覧の上の **通知設定** で **全員 / フレンドのみ / オフ** を選べます（オフならすべての通知が止まります。履歴には全員残ります）
+- トレイのアイコンを右クリックすると「テスト通知」「フレンド一覧を取り直す」「ログを開く」「終了」ができます
+- ふだんは何も言いません。問題があるときだけ、アイコンに黄色の「!」が付き、何が問題かが出ます
+
+## フレンドを黄色にする（なくても使えます）
+
+VRChat の auth クッキーを環境変数 `VRCHAT_AUTH_KEY` に入れておくと、フレンドの名前が黄色、自分は水色になります。
+
+- キーは Windows の環境変数から読みます。無ければ WSL の Ubuntu の zsh（`~/.zshrc` など）から読みます
+- キーはファイルにもログにも残しません。フレンド一覧を取る（1 時間に 1 回まで）ときに読むだけです
+- 手元に残すのは `%LOCALAPPDATA%\vrc-wrist-notifier\friends.json`（フレンドと自分の ID だけ）です
 
 ## アンインストール
 
-Frame:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/frame/install.sh | bash -s -- --uninstall
-```
-
-Windows:
+PowerShell に貼り付けて Enter:
 
 ```powershell
 irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/uninstall.ps1 | iex
 ```
 
-外したファイルは消さずに `~/.local/share/vrc-wrist-notifier-uninstalled/`（Windows は `%LOCALAPPDATA%\vrc-wrist-notifier-uninstalled\`）へ移します。設定ファイルと履歴は残ります。
+アプリを止めて自動起動をやめます。ファイルと履歴は `%LOCALAPPDATA%\vrc-wrist-notifier-uninstalled\` に移すだけで、消しません。
+
+### 0.5 までの Frame 側を入れていた人へ
+
+0.6 から Steam Frame には何も入れません。Frame の Konsole で次を貼り付けると、古い Frame 側を消せます（履歴が要るなら、先に `~/.local/state/vrc-wrist-notifier/history.jsonl` を PC の `%LOCALAPPDATA%\vrc-wrist-notifier\` にコピーしてください。形式は同じです）。
+
+```sh
+systemctl --user disable --now vrc-wrist-notifier; rm -rf ~/.config/systemd/user/vrc-wrist-notifier.service ~/.local/opt/vrc-wrist-notifier ~/.config/vrc-wrist-notifier ~/.local/state/vrc-wrist-notifier; systemctl --user daemon-reload
+```
 
 <details>
-<summary>くわしい情報（設定・開発者向け）</summary>
+<summary>くわしい情報</summary>
 
-- 設定: Frame は `~/.config/vrc-wrist-notifier/config.ini`、Windows は `%APPDATA%\vrc-wrist-notifier\config.json`（どちらも初回にサンプルからコピー）。項目は [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
-- 表示場所は視界の少し下（既定）か、左右の手首（`anchor = left_wrist`）を選べます
-- [frame-care](https://github.com/cympfh/frame-care)（休憩・電池・温度のお知らせ）のカードも表示します。急ぎは赤、注意は琥珀、ふつうは青緑
+- 設定: `%APPDATA%\vrc-wrist-notifier\config.json`（無くても動きます。項目は [windows/config.example.json](windows/config.example.json)）
+- 履歴: `%LOCALAPPDATA%\vrc-wrist-notifier\history.jsonl`。人の名前が入るので、どこにも送りません
+- 起動すると、PC に残っている VRChat のログからも履歴を読み込みます（同じものは 1 回だけ）
 - ワールドに入った直後の 10 秒は、元からいた人の「参加」を出しません
-- 3 人以上がまとめて参加・退出したときは、「Mint さんほか 4 人が参加」のように通知を 1 枚にまとめます（履歴には全員残ります）
-- ログ: `journalctl --user -u vrc-wrist-notifier -f`
-- 通信は UDP ポート 39570 の OSC（`/wrist/notify`、`/wrist/history`、`/wrist/heartbeat`）。Frame 側は家の LAN からのものだけ受け付けます
-- Windows 側はファイルを読むだけで、管理者権限・追加ソフト・自動起動は使いません
+- 3 人以上がまとめて参加・退出したときは「Mint さんほか 4 人が参加」のように 1 枚にまとめます
+- 自分がワールドを出たときの、ほかの人の「退出」は出しません
+- VRChat の設定やファイルは変更しません。管理者権限も要りません
+- 開発者向け: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 
 </details>
-
-ほかの Steam Frame 用ツール: [frame-tools](https://github.com/cympfh/frame-tools)

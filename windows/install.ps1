@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
-# vrc-wrist-notifier (Windows 側) のインストーラー。管理者の権限は要りません。
+# vrc-wrist-notifier のインストーラー。管理者の権限は要りません。
 #   irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/install.ps1 | iex
 # やること: アプリ (vrc-wrist-notifier.exe) を %LOCALAPPDATA%\vrc-wrist-notifier に置き、サインインしたときに
-# 自動で起動するようにして（スタートアップにショートカット）、今すぐ起動します。アプリはシステムトレイに入ります。
+# 自動で起動するようにして（スタートアップにショートカット）、今すぐ起動します。アプリはシステムトレイに入り、
+# SteamVR が動いているときだけ、そこに通知と「入退室の履歴」を出します。
 # 0.4 までの PowerShell 版が動いていれば止めて、置き換えます。
-# アンインストール（アプリを止めて自動起動をやめ、ファイルは脇に移します。設定は残します）:
+# アンインストール（アプリを止めて自動起動をやめ、ファイルと履歴は脇に移します。設定は残します）:
 #   irm https://raw.githubusercontent.com/cympfh/vrc-wrist-notifier/main/windows/uninstall.ps1 | iex
 param([switch]$Uninstall)
 $ErrorActionPreference = "Stop"
@@ -84,11 +85,11 @@ $sh = New-Object -ComObject WScript.Shell
 $s = $sh.CreateShortcut($lnk)
 $s.TargetPath = $exe
 $s.WorkingDirectory = $dest
-$s.Description = "vrc-wrist-notifier（VRChat の参加・退出を Steam Frame に通知）"
+$s.Description = "vrc-wrist-notifier（VRChat の参加・退出を SteamVR に通知）"
 $s.Save()
 
 Start-Process -FilePath $exe -WorkingDirectory $dest
 Write-Host ""
 Write-Host "インストールしました: $exe"
 Write-Host "自動起動: $lnk"
-Write-Host "起動しました。タスクバーの右下（通知領域）のアイコンを右クリックすると、状態の確認と終了ができます。"
+Write-Host "起動しました。タスクバーの右下（通知領域）のアイコンを右クリックすると、テスト通知と終了ができます。"
