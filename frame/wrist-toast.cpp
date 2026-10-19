@@ -34,7 +34,7 @@
 #include <string>
 #include <vector>
 
-static const char* kVersion = "0.4.4";
+static const char* kVersion = "0.4.5";
 static volatile sig_atomic_t g_stop = 0;
 
 static void logf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -633,18 +633,21 @@ static int self_test() {
                   HistoryPanel::notify_from("???") == HistoryPanel::NotifyAll,
               "通知する人の名前と値の行き来");
         WatchStatus ks;
+        auto note = [&]() { const char* n = HistoryPanel::corner_note(ks); return std::string(n ? n : ""); };
         ks.watcher = WatchStatus::On;
         ks.friends = "nokey";
-        bool k1 = HistoryPanel::key_problem(ks) && std::string(HistoryPanel::key_problem(ks)) == "VRCHAT_AUTH_KEY 未設定";
+        bool k1 = note() == "VRCHAT_AUTH_KEY 未設定";
         ks.friends = "bad";
-        bool k2 = HistoryPanel::key_problem(ks) && std::string(HistoryPanel::key_problem(ks)) == "VRCHAT_AUTH_KEY が使えません";
+        bool k2 = note() == "VRCHAT_AUTH_KEY が使えません";
         ks.friends = "ok";
-        bool k3 = !HistoryPanel::key_problem(ks);
+        bool k3 = note().empty();
         ks.friends = "";   // 古い Windows 側
-        bool k4 = !HistoryPanel::key_problem(ks);
+        bool k4 = note().empty();
         ks.friends = "nokey"; ks.watcher = WatchStatus::Off;
-        bool k5 = !HistoryPanel::key_problem(ks);
+        bool k5 = note().empty();   // 起動直後（まだ止まっているとは言わない）
         check(k1 && k2 && k3 && k4 && k5, "キーの注意は未設定・使えないときだけ（問題が無い・わからないときは出さない）");
+        ks.down = true;
+        check(note() == "Windows 側の見張りが止まっています", "見張りが止まっていたら、キーの注意の代わりに見張りのことを出す");
         printf("（テスト用の一時ファイル: %s。消していません）\n", dir.c_str());
     }
     printf("%s\n", fails ? "自己テスト失敗" : "自己テスト OK");
@@ -709,7 +712,7 @@ int main(int argc, char** argv) {
                     "  --probe                     動いている wrist-toast のパネルが SteamVR にあるか確かめる\n"
                     "  --dump-png OUT [--kind K --title T --text S --friend|--self]   通知のカードを PNG に（名前をフレンドの黄色 / 自分の水色で）\n"
                     "  --dump-history-png OUT [--history-dir D] [--filter all|join|leave] [--scroll PX]   履歴のパネルを PNG に\n"
-                    "      [--watcher on|old|off --vrc-log full|errors|unknown|nolog]   履歴が無いときの表示の確認用\n"
+                    "      [--watcher on|old|off|down --vrc-log full|errors|unknown|nolog]   履歴が無いときの表示の確認用\n"
                     "      [--notify all|friends|off --friends-state ok|nokey|bad|none|off]   「通知」の帯の確認用\n"
                     "  --dump-thumbnail-png OUT    ダッシュボードのアイコンを PNG に\n"
                     "  --version\n");
@@ -736,6 +739,7 @@ int main(int argc, char** argv) {
             panel.set_filter(filter == "join" ? HistoryPanel::JoinOnly : filter == "leave" ? HistoryPanel::LeaveOnly : HistoryPanel::All);
             WatchStatus st;
             st.watcher = watcher_opt == "on" ? WatchStatus::On : watcher_opt == "old" ? WatchStatus::Old : WatchStatus::Off;
+            st.down = watcher_opt == "down";
             st.log = vrc_log_opt;
             st.friends = friends_state_opt;
             panel.set_status(st);
@@ -778,7 +782,9 @@ int main(int argc, char** argv) {
     // Windows 側の見張り: /wrist/heartbeat（0.3.0 から 30 秒ごと）か、ほかのパケットがいつ来たか
     double beat_at = -1e9, packet_at = -1e9;
     std::string beat_version, beat_log, beat_friends;
-    const double kAlive = 90;
+    const double kAlive = 90;   // heartbeat（30 秒ごと）3 回分
+    const double started_at = now_s();
+    bool watcher_down = false;
 
     while (!g_stop) {
         double now = now_s();
@@ -844,6 +850,11 @@ int main(int argc, char** argv) {
             WatchStatus st;
             if (now - beat_at < kAlive) { st.watcher = WatchStatus::On; st.version = beat_version; st.log = beat_log; st.friends = beat_friends; }
             else if (now - packet_at < kAlive) st.watcher = WatchStatus::Old;
+            else st.down = now - started_at >= kAlive;   // 起動してから 90 秒は待つ
+            if (st.down != watcher_down) {
+                watcher_down = st.down;
+                if (st.down) logf("Windows 側の見張りの知らせが %.0f 秒以上来ていません（パネルの右下に出します）", kAlive);
+            }
             panel_dirty |= panel.set_status(st);
         }
 
