@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# Windows のアプリのアイコンを、Frame 側のダッシュボードのアイコンと同じ絵から作る（Pillow が要る）。
-#   icon.png は Frame 側の絵そのもの: wrist-toast --dump-thumbnail-png icon.png（frame/panel.h の render_thumbnail）
+# アプリのアイコン（exe・トレイ・ダッシュボード）を icon.png から作る（Pillow が要る）。
 #   → icon.ico（exe）、icon-32.rgba（トレイ）、icon-warn-32.rgba（問題があるとき: 同じ絵に黄色の「!」）
 #   cd windows/assets && python3 make-icons.py
 from PIL import Image, ImageDraw

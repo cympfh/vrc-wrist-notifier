@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! システムトレイ。見張りは裏のスレッドで 0.5 秒ごとに回し、トレイは状態が変わったときだけ書き換える。
+//! システムトレイ。見張りと SteamVR のオーバーレイは裏のスレッドで回し、トレイは状態が変わったときだけ書き換える。
 //! 表示は「問題があるときだけ言う」: 何も無ければツールチップは名前だけ、アイコンも普通のまま。
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -7,7 +7,9 @@ use std::time::Duration;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use vwn::logf;
-use vwn::watcher::{Status, Watcher};
+use std::path::PathBuf;
+use vwn::config::Config;
+use vwn::watcher::{Out, Status, Watcher};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -16,6 +18,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 enum Cmd {
     Refresh,
+    Test,
 }
 
 fn icon(warn: bool) -> Icon {
@@ -24,11 +27,8 @@ fn icon(warn: bool) -> Icon {
 }
 
 /// 問題だけを並べる（無ければ空）
-pub fn problems(s: &Status, host: &str) -> Vec<String> {
+pub fn problems(s: &Status) -> Vec<String> {
     let mut v = Vec::new();
-    if s.send_error.is_some() {
-        v.push(format!("⚠ Frame（{host}）に送れません"));
-    }
     if s.log == "errors" {
         v.push("⚠ VRChat のログ出力が Full ではありません".into());
     }
@@ -42,34 +42,37 @@ pub fn problems(s: &Status, host: &str) -> Vec<String> {
 
 struct Ui {
     tray: TrayIcon,
+    test: MenuId,
     refresh: MenuId,
     open_log: MenuId,
     quit: MenuId,
 }
 
-fn build_menu(s: &Status, host: &str) -> (Menu, MenuId, MenuId, MenuId) {
+fn build_menu(s: &Status) -> (Menu, [MenuId; 4]) {
     let menu = Menu::new();
     let _ = menu.append(&MenuItem::new(format!("vrc-wrist-notifier {}", vwn::VERSION), false, None));
-    for p in problems(s, host) {
+    for p in problems(s) {
         let _ = menu.append(&MenuItem::new(p, false, None));
     }
     if s.refreshing {
         let _ = menu.append(&MenuItem::new("フレンド一覧を取り直しています…", false, None));
     }
     let _ = menu.append(&PredefinedMenuItem::separator());
+    let test = MenuItem::new("テスト通知", true, None);
     let refresh = MenuItem::new("フレンド一覧を取り直す", !s.refreshing, None);
     let open_log = MenuItem::new("ログを開く", vwn::log::path().is_some(), None);
     let quit = MenuItem::new("終了", true, None);
+    let _ = menu.append(&test);
     let _ = menu.append(&refresh);
     let _ = menu.append(&open_log);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&quit);
-    (menu, refresh.id().clone(), open_log.id().clone(), quit.id().clone())
+    (menu, [test.id().clone(), refresh.id().clone(), open_log.id().clone(), quit.id().clone()])
 }
 
-fn tooltip(s: &Status, host: &str) -> String {
+fn tooltip(s: &Status) -> String {
     let mut t = vec!["vrc-wrist-notifier".to_string()];
-    t.extend(problems(s, host));
+    t.extend(problems(s));
     let mut s = t.join("\n");
     while s.encode_utf16().count() > 127 {
         s.pop();
@@ -78,22 +81,22 @@ fn tooltip(s: &Status, host: &str) -> String {
 }
 
 impl Ui {
-    fn new(s: &Status, host: &str) -> Ui {
-        let (menu, refresh, open_log, quit) = build_menu(s, host);
+    fn new(s: &Status) -> Ui {
+        let (menu, [test, refresh, open_log, quit]) = build_menu(s);
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip(tooltip(s, host))
-            .with_icon(icon(!problems(s, host).is_empty()))
+            .with_tooltip(tooltip(s))
+            .with_icon(icon(!problems(s).is_empty()))
             .build()
             .expect("トレイのアイコンを作れませんでした");
-        Ui { tray, refresh, open_log, quit }
+        Ui { tray, test, refresh, open_log, quit }
     }
-    fn update(&mut self, s: &Status, host: &str) {
-        let (menu, refresh, open_log, quit) = build_menu(s, host);
+    fn update(&mut self, s: &Status) {
+        let (menu, [test, refresh, open_log, quit]) = build_menu(s);
         self.tray.set_menu(Some(Box::new(menu)));
-        let _ = self.tray.set_tooltip(Some(tooltip(s, host)));
-        let _ = self.tray.set_icon(Some(icon(!problems(s, host).is_empty())));
-        (self.refresh, self.open_log, self.quit) = (refresh, open_log, quit);
+        let _ = self.tray.set_tooltip(Some(tooltip(s)));
+        let _ = self.tray.set_icon(Some(icon(!problems(s).is_empty())));
+        (self.test, self.refresh, self.open_log, self.quit) = (test, refresh, open_log, quit);
     }
 }
 
@@ -108,7 +111,7 @@ fn open_path(p: &std::path::Path) {
     }
 }
 
-pub fn run(mut w: Watcher) {
+pub fn run(cfg: Config, cfg_path: PathBuf) {
     // 1 つだけ動かす（サインインのたびの自動起動と、手で起動したのとが重ならないように）
     let name: Vec<u16> = "Local\\vrc-wrist-notifier\0".encode_utf16().collect();
     let _mutex = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
@@ -116,9 +119,15 @@ pub fn run(mut w: Watcher) {
         logf!("もう動いているので、こちらは終わります");
         return;
     }
-    let host = w.cfg.frame_host.clone();
+    let (out_tx, out_rx) = mpsc::channel::<Out>();
+    let mut w = Watcher::new(cfg.clone(), Some(out_tx));
+    w.fetcher = Some(crate::friends_api::fetch);
     let shared = Arc::new(Mutex::new(w.status()));
     let (tx, rx) = mpsc::channel::<Cmd>();
+    {
+        let shared = shared.clone();
+        std::thread::spawn(move || crate::vr::run(cfg, cfg_path, out_rx, shared));
+    }
     {
         let shared = shared.clone();
         std::thread::spawn(move || {
@@ -127,6 +136,7 @@ pub fn run(mut w: Watcher) {
                 while let Ok(c) = rx.try_recv() {
                     match c {
                         Cmd::Refresh => w.manual_refresh(),
+                        Cmd::Test => w.send_test(),
                     }
                 }
                 w.tick();
@@ -137,7 +147,7 @@ pub fn run(mut w: Watcher) {
     }
 
     let mut shown = shared.lock().unwrap().clone();
-    let mut ui = Ui::new(&shown, &host);
+    let mut ui = Ui::new(&shown);
     let menu_rx = MenuEvent::receiver();
     loop {
         unsafe {
@@ -155,6 +165,8 @@ pub fn run(mut w: Watcher) {
                 logf!("トレイの「終了」で終わります");
                 drop(ui); // アイコンを消してから
                 std::process::exit(0);
+            } else if ev.id == ui.test {
+                let _ = tx.send(Cmd::Test);
             } else if ev.id == ui.refresh {
                 let _ = tx.send(Cmd::Refresh);
             } else if ev.id == ui.open_log {
@@ -165,9 +177,9 @@ pub fn run(mut w: Watcher) {
         }
         let now = shared.lock().unwrap().clone();
         // 表示に関わるところが変わったときだけ書き換える（ワールド名などでは書き換えない）
-        let key = |s: &Status| (problems(s, &host), s.refreshing);
+        let key = |s: &Status| (problems(s), s.refreshing);
         if key(&now) != key(&shown) {
-            ui.update(&now, &host);
+            ui.update(&now);
         }
         shown = now;
         unsafe {

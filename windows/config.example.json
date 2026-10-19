@@ -1,14 +1,19 @@
 {
-  "_comment": "vrc-wrist-notifier (Windows 側) の設定サンプル。frame_host は Steam Frame のホスト名か IP。",
-  "frame_host": "frame",
-  "frame_port": 39570,
-  "log_dir": "",
-  "quiet_seconds": 10,
+  "_comment": "vrc-wrist-notifier の設定サンプル。%APPDATA%\\vrc-wrist-notifier\\config.json に置くと読みます（無くても既定値で動きます）。",
+  "notify_people": "all",
   "notify_join": true,
   "notify_leave": true,
   "notify_world": true,
   "notify_invite": true,
   "notify_friend": true,
   "notify_other": false,
-  "backfill_history": true
+  "quiet_seconds": 10,
+  "toast_seconds": 4,
+  "toast_distance_m": 0.8,
+  "toast_y_m": -0.18,
+  "toast_width_m": 0.3,
+  "history_panel": true,
+  "panel_width_m": 2.6,
+  "backfill_history": true,
+  "log_dir": ""
 }

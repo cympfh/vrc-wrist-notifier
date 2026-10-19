@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 //! VRChat のログ (output_log_*.txt) を読むだけで、参加・退出・ワールド移動・招待・フレンド申請を見つけて
-//! Steam Frame の wrist-toast に UDP (OSC) で送る。VRChat の設定やファイルは変更しない。
-//! 0.4 までの PowerShell 版 (vrc-wrist-notifier.ps1) と同じふるまい・同じ送り方（Frame 側は新旧どちらでも読める）。
+//! 通知と履歴を VR のスレッド（vr.rs）に渡す。VRChat の設定やファイルは変更しない。
 use crate::config::Config;
+use crate::history::HistEvent;
 use crate::logf;
+use crate::toast::Toast;
 use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::sync::mpsc::Sender;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::OnceLock;
@@ -63,31 +64,24 @@ fn now() -> NaiveDateTime {
     Local::now().naive_local()
 }
 
-/// 履歴の重複を除く鍵（Frame 側で同じ鍵は 1 回だけ記録する）
+/// 履歴の重複を除く鍵（同じ鍵は 1 回だけ記録する）
 pub fn hist_key(ts: &str, kind: &str, name: &str) -> String {
     format!("{ts}|{kind}|{name}")
 }
 
-// ---------------------------------------------------------------- OSC
-pub fn osc_packet(address: &str, strings: &[&str]) -> Vec<u8> {
-    fn add(buf: &mut Vec<u8>, s: &str) {
-        buf.extend_from_slice(s.as_bytes());
-        let pad = 4 - (s.len() % 4);
-        buf.extend(std::iter::repeat(0u8).take(pad));
-    }
-    let mut buf = Vec::new();
-    add(&mut buf, address);
-    add(&mut buf, &format!(",{}", "s".repeat(strings.len())));
-    for s in strings {
-        add(&mut buf, s);
-    }
-    buf
-}
-
-/// 送り先。Dry は送らずに検出結果を out に貯める（テストと --dry-run）
+/// 見つけたものの渡し先。Dry は渡さずに検出結果を貯める（テストと --dry-run）
 pub enum Sink {
     Dry(Vec<String>),
-    Udp { sock: Option<(UdpSocket, SocketAddr)>, error: Option<String> },
+    Live(Sender<Out>),
+}
+
+/// VR のスレッドに渡すもの
+#[derive(Clone, Debug)]
+pub enum Out {
+    /// 通知。friends / self_name はカードに入っているフレンドと自分の名前（「フレンドのみ」で数えなおすため）
+    Toast { toast: Toast, friends: Vec<String>, self_name: String },
+    /// 履歴（同じ鍵は 1 回だけ。フレンドの印は後から書き足される）
+    History(HistEvent),
 }
 
 // ---------------------------------------------------------------- フレンド
@@ -123,12 +117,10 @@ struct Pending {
 pub struct Status {
     /// full / errors / unknown / nolog
     pub log: String,
-    /// Frame に送っているのと同じ: ok / nokey / bad / none / off
+    /// ok / nokey / bad / none / off
     pub friends: String,
     pub friends_count: usize,
     pub refreshing: bool,
-    /// Frame に送れないときの理由
-    pub send_error: Option<String>,
     pub world: String,
 }
 
@@ -158,8 +150,6 @@ pub struct Watcher {
     friends_state: String,
     unknown_joins: Vec<Unknown>,
     // 見張り
-    last_beat: Option<Instant>,
-    last_state: String,
     current: Option<PathBuf>,
     file: Option<File>,
     partial: Vec<u8>,
@@ -168,10 +158,12 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    pub fn new(cfg: Config, dry: bool) -> Watcher {
+    /// tx が None なら dry-run（検出結果を take_output で返す）
+    pub fn new(cfg: Config, tx: Option<Sender<Out>>) -> Watcher {
+        let dry = tx.is_none();
         let mut w = Watcher {
             cfg,
-            sink: if dry { Sink::Dry(Vec::new()) } else { Sink::Udp { sock: None, error: None } },
+            sink: if dry { Sink::Dry(Vec::new()) } else { Sink::Live(tx.clone().expect("live には送り先が要る")) },
             replay: false,
             fetcher: None,
             entered_at: NaiveDateTime::MIN,
@@ -190,8 +182,6 @@ impl Watcher {
             friends_key_bad: false,
             friends_state: "none".into(),
             unknown_joins: Vec::new(),
-            last_beat: None,
-            last_state: String::new(),
             current: None,
             file: None,
             partial: Vec::new(),
@@ -220,58 +210,20 @@ impl Watcher {
         }
     }
 
-    // ------------------------------------------------------------ 送信
-    fn endpoint(&self) -> Result<SocketAddr, String> {
-        let host = self.cfg.frame_host.trim();
-        // Frame 側は IPv4 で待っているので、IPv4 のアドレスを選ぶ
-        (host, self.cfg.frame_port)
-            .to_socket_addrs()
-            .map_err(|e| format!("{host} が見つかりません（{e}）"))?
-            .find(|a| a.is_ipv4())
-            .ok_or_else(|| format!("{host} の IPv4 アドレスが見つかりません。config.json の frame_host に IP を書いてください。"))
-    }
-
-    pub fn send_osc(&mut self, address: &str, strings: &[&str]) -> Result<(), String> {
-        let pkt = osc_packet(address, strings);
-        let ep = match &self.sink {
-            Sink::Dry(_) => return Ok(()),
-            Sink::Udp { sock: Some((_, ep)), .. } => Ok(*ep),
-            Sink::Udp { sock: None, .. } => self.endpoint(),
-        };
-        let r = ep.and_then(|ep| {
-            if let Sink::Udp { sock, .. } = &mut self.sink {
-                if sock.is_none() {
-                    let s = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("UDP を開けません（{e}）"))?;
-                    logf!("送り先: {ep}");
-                    *sock = Some((s, ep));
-                }
-                let (s, ep) = sock.as_ref().unwrap();
-                s.send_to(&pkt, ep).map_err(|e| format!("{ep} に送れません（{e}）"))?;
-            }
-            Ok(())
-        });
-        if let Sink::Udp { sock, error } = &mut self.sink {
-            match &r {
-                Ok(()) => {
-                    if error.take().is_some() {
-                        logf!("Frame に送れるようになりました");
-                    }
-                }
-                Err(e) => {
-                    *sock = None; // 次はアドレスを引きなおす
-                    if error.as_deref() != Some(e.as_str()) {
-                        logf!("送信エラー: {e}");
-                    }
-                    *error = Some(e.clone());
-                }
-            }
+    // ------------------------------------------------------------ 渡す
+    fn out(&mut self, o: Out) {
+        if let Sink::Live(tx) = &self.sink {
+            let _ = tx.send(o);
         }
-        r
     }
 
-    /// 通知を送る。ts（yyyy-MM-dd HH:mm:ss）と world を付けると Frame 側の履歴にも残る。quiet なら履歴だけ。
-    /// 引数: kind, title, text, ts, world, key, quiet, worldId(0.3.0), 先頭がフレンドなら "1" / 自分なら "self"(0.4.0),
-    /// カードに入っているフレンドの名前をタブ区切りで(0.4.1), カードに入っている自分の名前(0.4.1)。古い Frame 側は後ろを読まない
+    fn history(&mut self, t: &str, kind: &str, name: &str, world: &str, wid: &str, fr: bool, me: bool) {
+        let key = hist_key(t, kind, name);
+        self.out(Out::History(HistEvent { t: t.into(), kind: kind.into(), name: name.into(), world: world.into(), key, wid: wid.into(), fr, me }));
+    }
+
+    /// 通知を出す。ts（yyyy-MM-dd HH:mm:ss）が付いていれば履歴にも残す。quiet なら履歴だけ。
+    /// friend / is_self: 先頭の名前がフレンド・自分。friend_names / self_name: カードに入っているフレンドと自分の名前
     #[allow(clippy::too_many_arguments)]
     fn send_toast(&mut self, kind: &str, title: &str, text: &str, ts: &str, world: &str, quiet: bool, world_id: &str,
                   friend: bool, friend_names: &[String], is_self: bool, self_name: &str) {
@@ -282,33 +234,25 @@ impl Watcher {
             }
             return;
         }
-        let key = if ts.is_empty() { String::new() } else { hist_key(ts, kind, title) };
-        let fr = if is_self { "self" } else if friend { "1" } else { "" };
-        let names = friend_names.join("\t");
-        let q = if quiet { "quiet" } else { "" };
-        if self
-            .send_osc("/wrist/notify", &[kind, title, text, ts, world, &key, q, world_id, fr, &names, self_name])
-            .is_ok()
-        {
-            if quiet {
-                logf!("履歴だけ送信: [{kind}] {title}");
-            } else {
-                logf!("送信: [{kind}] {title} / {text}");
-            }
+        if !ts.is_empty() {
+            let (w, wid) = if world.is_empty() { (self.world.clone(), self.world_id.clone()) } else { (world.to_string(), world_id.to_string()) };
+            self.history(ts, kind, title, &w, &wid, friend && !is_self, is_self);
         }
+        if quiet {
+            return;
+        }
+        logf!("通知: [{kind}] {title} / {text}");
+        let toast = Toast { kind: kind.into(), title: title.into(), text: text.into(), fr: friend && !is_self, me: is_self };
+        self.out(Out::Toast { toast, friends: friend_names.to_vec(), self_name: self_name.into() });
     }
 
     fn simple_toast(&mut self, kind: &str, title: &str, text: &str) {
         self.send_toast(kind, title, text, "", "", false, "", false, &[], false, "");
     }
 
-    /// --test: テスト通知を 1 件
-    pub fn send_test(&mut self) -> Result<(), String> {
+    /// トレイの「テスト通知」: テスト通知を 1 件
+    pub fn send_test(&mut self) {
         self.simple_toast("join", "テスト", "vrc-wrist-notifier から届きました");
-        match &self.sink {
-            Sink::Udp { error: Some(e), .. } => Err(e.clone()),
-            _ => Ok(()),
-        }
     }
 
     // ------------------------------------------------------------ フレンド（0.4.0）
@@ -419,12 +363,11 @@ impl Watcher {
             }
             self.friends_state = "ok".into();
             logf!("フレンド一覧を取り直しました: {} 人（キーは {} から）", r.ids.len(), r.where_);
-            // 取り直す前に参加・退出した人のうち、フレンドだった人は履歴に印を付け直す（同じ鍵なので Frame 側で書き足される）
+            // 取り直す前に参加・退出した人のうち、フレンドだった人は履歴に印を付け直す（同じ鍵なので書き足される）
             let unknown: Vec<Unknown> =
                 std::mem::take(&mut self.unknown_joins).into_iter().filter(|u| self.friend_ids.contains(&u.uid)).collect();
             for u in &unknown {
-                let key = hist_key(&u.ts, &u.kind, &u.name);
-                let _ = self.send_osc("/wrist/history", &[&u.ts, &u.kind, &u.name, &u.world, &key, &u.wid, "1"]);
+                self.history(&u.ts, &u.kind, &u.name, &u.world, &u.wid, true, false);
             }
         } else {
             match r.code.as_str() {
@@ -530,8 +473,8 @@ impl Watcher {
     }
 
     // ------------------------------------------------------------ ログの解析
-    /// ワールドの行なら今のワールドを覚えて "entered"（入った）か "joining"（ID の行）を返す。ほかの行は None。
-    /// 今の VRChat は Destination set（ID）→ Entering Room（名前）→ Joining（ID）の順。古いログは Joining が先
+    /// ワールドの行なら今のワールドを覚えて "entered"（入った）、"joining"（ID の行）、"left"（自分が出た・VRChat を終えた。
+    /// leaving を立てる）を返す。ほかの行は None。今の VRChat は Destination set（ID）→ Entering Room（名前）→ Joining（ID）の順。古いログは Joining が先
     fn update_world(&mut self, body: &str) -> Option<&'static str> {
         if body == "[Behaviour] OnLeftRoom" || body.starts_with("VRCApplication: HandleApplicationQuit") {
             self.leaving = true;
@@ -558,6 +501,16 @@ impl Watcher {
             return Some("entered");
         }
         None
+    }
+
+    /// 自分が出たときの片付けの「退出」か（他人の退出で、leaving が立っている）。
+    /// 自分の参加（OnPlayerJoined）が来たら、Entering Room が無くても片付けは終わったとみなして leaving を下ろす
+    fn is_teardown_leave(&mut self, kind: &str, uid: &str) -> bool {
+        let me = self.is_self(uid);
+        if kind == "join" && me {
+            self.leaving = false;
+        }
+        kind == "leave" && self.leaving && !me
     }
 
     fn reset_world(&mut self) {
@@ -596,10 +549,10 @@ impl Watcher {
             if let Some(c) = rx.captures(body) {
                 let name = c[1].to_string();
                 let uid = c.get(2).map_or("", |m| m.as_str()).to_string();
-                let me = self.is_self(&uid);
-                if kind == "leave" && self.leaving && !me {
-                    return; // 自分が出たときの片付け（上の leaving）
+                if self.is_teardown_leave(kind, &uid) {
+                    return;
                 }
+                let me = self.is_self(&uid);
                 let fr = self.is_friend(&uid) && !me;
                 let (w, wid) = (self.world.clone(), self.world_id.clone());
                 let text = if kind == "join" { "が参加しました" } else { "が退出しました" };
@@ -679,19 +632,6 @@ impl Watcher {
         }
     }
 
-    /// Frame 側に「動いています」を知らせる（30 秒ごと、状態が変わったときはすぐ）。古い Frame 側は知らないアドレスとして捨てるだけ。
-    /// 引数: 版、ログ出力の状態（full / errors / unknown / nolog）、キーの状態（ok / nokey / bad / none / off）
-    fn send_heartbeat(&mut self, state: &str) {
-        let key2 = format!("{state}|{}", self.friends_state);
-        if key2 == self.last_state && self.last_beat.is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
-            return;
-        }
-        self.last_beat = Some(Instant::now());
-        self.last_state = key2;
-        let fs = self.friends_wire();
-        let _ = self.send_osc("/wrist/heartbeat", &[crate::VERSION, state, &fs]);
-    }
-
     // ------------------------------------------------------------ 過去のログ・今のワールド
     pub fn log_files(&self) -> Vec<PathBuf> {
         let mut v: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&self.cfg.log_dir)
@@ -735,8 +675,8 @@ impl Watcher {
                         }
                     }
                 };
-                if kind == "leave" && self.leaving && !self.is_self(&uid) {
-                    continue; // 自分が出たときの片付け
+                if self.is_teardown_leave(kind, &uid) {
+                    continue;
                 }
                 let ts = parse_ts(ts_raw).format(TS_OUT).to_string();
                 let fr = if self.is_self(&uid) { "self" } else if self.is_friend(&uid) { "1" } else { "" };
@@ -745,19 +685,14 @@ impl Watcher {
                     let s = format!("history\t{ts}\t{kind}\t{name}\t{}\t{}{mark}", self.world, self.world_id);
                     self.print(s);
                 } else {
-                    // 6 個目のワールド ID は 0.3.0 から、7 個目のフレンドの印は 0.4.0 から（古い Frame 側は読まない）
                     let (w, wid) = (self.world.clone(), self.world_id.clone());
-                    let key = hist_key(&ts, kind, &name);
-                    let _ = self.send_osc("/wrist/history", &[&ts, kind, &name, &w, &key, &wid, fr]);
+                    self.history(&ts, kind, &name, &w, &wid, fr == "1", fr == "self");
                     count += 1;
-                    if count % 50 == 0 {
-                        std::thread::sleep(Duration::from_millis(20)); // 一度に送りすぎない
-                    }
                 }
             }
         }
         if !self.dry() {
-            logf!("過去のログから履歴を {count} 件送りました（{} ファイル。重複は Frame 側で除きます）", files.len());
+            logf!("過去のログから履歴を {count} 件読みました（{} ファイル。重複は除きます）", files.len());
         }
         self.reset_world();
     }
@@ -849,8 +784,6 @@ impl Watcher {
                 }
             }
         }
-        let state = if self.file.is_some() { self.log_state() } else { "nolog" };
-        self.send_heartbeat(state);
         if self.file.is_some() {
             self.read_appended();
         } else if !self.warned {
@@ -921,10 +854,6 @@ impl Watcher {
             friends: self.friends_wire(),
             friends_count: self.friend_ids.len(),
             refreshing: self.friends_job.is_some(),
-            send_error: match &self.sink {
-                Sink::Udp { error, .. } => error.clone(),
-                _ => None,
-            },
             world: self.world.clone(),
         }
     }

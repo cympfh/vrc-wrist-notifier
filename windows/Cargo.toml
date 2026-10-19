@@ -1,9 +1,9 @@
 [package]
 name = "vrc-wrist-notifier"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
-description = "VRChat のログを読んで Steam Frame の wrist-toast に通知を送る（Windows 側、システムトレイ常駐）"
+description = "VRChat のログを読んで SteamVR に参加・退出などを通知する（Windows、システムトレイ常駐）"
 
 [lib]
 name = "vwn"
@@ -15,10 +15,13 @@ path = "src/main.rs"
 
 [dependencies]
 regex = "1"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+fontdue = "0.9"
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [target.'cfg(windows)'.dependencies]
+libloading = "0.8"
 tray-icon = "0.21"
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
@@ -28,9 +31,13 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security",
     "Win32_System_Threading",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
 ] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 winresource = "0.1"
