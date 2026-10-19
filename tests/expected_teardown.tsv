@@ -1,0 +1,9 @@
+world	World A	ワールドに入りました
+join	Ann	が参加しました
+join	Bob	が参加しました
+join	Cat	が参加しました
+leave	Ann	が退出しました
+leave	Me	が退出しました	self
+world	World B	ワールドに入りました
+join	Dan	が参加しました
+leave	Bob	が退出しました

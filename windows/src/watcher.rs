@@ -142,6 +142,9 @@ pub struct Watcher {
     world: String,
     world_id: String,
     pending_id: String,
+    /// 自分がワールドを出たところ（OnLeftRoom から次の Entering Room まで）。この間の他人の OnPlayerLeft は
+    /// VRChat がインスタンスを片付けるときに全員分出すもので、本当に退出したわけではないので、通知も履歴もしない
+    leaving: bool,
     seen_notif: HashSet<String>,
     levels: HashMap<String, u64>,
     pending: Vec<(String, Pending)>, // 入れた順（"kind|world" → まとめ）
@@ -175,6 +178,7 @@ impl Watcher {
             world: String::new(),
             world_id: String::new(),
             pending_id: String::new(),
+            leaving: false,
             seen_notif: HashSet::new(),
             levels: HashMap::new(),
             pending: Vec::new(),
@@ -529,6 +533,10 @@ impl Watcher {
     /// ワールドの行なら今のワールドを覚えて "entered"（入った）か "joining"（ID の行）を返す。ほかの行は None。
     /// 今の VRChat は Destination set（ID）→ Entering Room（名前）→ Joining（ID）の順。古いログは Joining が先
     fn update_world(&mut self, body: &str) -> Option<&'static str> {
+        if body == "[Behaviour] OnLeftRoom" || body.starts_with("VRCApplication: HandleApplicationQuit") {
+            self.leaving = true;
+            return Some("left");
+        }
         if let Some(c) = re().joining.captures(body) {
             // 入った直後の Joining は、今のワールドの ID（Destination set が無かったとき用）
             let id = c[1].to_string();
@@ -546,6 +554,7 @@ impl Watcher {
         if let Some(c) = re().room.captures(body) {
             self.world = c[1].trim().to_string();
             self.world_id = std::mem::take(&mut self.pending_id);
+            self.leaving = false;
             return Some("entered");
         }
         None
@@ -555,6 +564,7 @@ impl Watcher {
         self.world.clear();
         self.world_id.clear();
         self.pending_id.clear();
+        self.leaving = false;
     }
 
     fn count_level(&mut self, level: &str) {
@@ -571,7 +581,7 @@ impl Watcher {
         }
         self.update_self(body);
         match self.update_world(body) {
-            Some("joining") => return,
+            Some("joining") | Some("left") => return,
             Some(_) => {
                 self.entered_at = ts;
                 self.flush_pending(ts, true); // 前のワールドの分は先に出す（ワールドが違えば別のカード）
@@ -587,6 +597,9 @@ impl Watcher {
                 let name = c[1].to_string();
                 let uid = c.get(2).map_or("", |m| m.as_str()).to_string();
                 let me = self.is_self(&uid);
+                if kind == "leave" && self.leaving && !me {
+                    return; // 自分が出たときの片付け（上の leaving）
+                }
                 let fr = self.is_friend(&uid) && !me;
                 let (w, wid) = (self.world.clone(), self.world_id.clone());
                 let text = if kind == "join" { "が参加しました" } else { "が退出しました" };
@@ -710,7 +723,7 @@ impl Watcher {
                 let Some((ts_raw, _, body)) = split_line(&line) else { continue };
                 self.update_self(body);
                 let (kind, name, uid) = match self.update_world(body) {
-                    Some("joining") => continue,
+                    Some("joining") | Some("left") => continue,
                     Some(_) => ("world", self.world.clone(), String::new()),
                     None => {
                         if let Some(c) = re().join.captures(body) {
@@ -722,6 +735,9 @@ impl Watcher {
                         }
                     }
                 };
+                if kind == "leave" && self.leaving && !self.is_self(&uid) {
+                    continue; // 自分が出たときの片付け
+                }
                 let ts = parse_ts(ts_raw).format(TS_OUT).to_string();
                 let fr = if self.is_self(&uid) { "self" } else if self.is_friend(&uid) { "1" } else { "" };
                 if self.dry() {
