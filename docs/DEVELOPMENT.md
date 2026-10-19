@@ -44,7 +44,8 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 ## フレンドと自分
 
 - フレンド一覧（ID だけ）は `%LOCALAPPDATA%\vrc-wrist-notifier\friends.json`。`friends_refresh_minutes`（既定 60）分より古くなったときだけ、`GET https://api.vrchat.cloud/api/1/auth/user` を 1 回呼んで取り直す（裏のスレッド。失敗しても 1 時間はあける）
-- キー（`auth` クッキーの値）はトレイの「設定…」の窓（`windows/src/settings.rs`、Win32 の伏せ字の入力欄）で入れる。貼り付けたものは `auth.rs` の `normalize_key` で値だけにし（`auth=…`、`Cookie: …; auth=…` も可）、DPAPI（`CryptProtectData`、ユーザー単位、アプリ固有の entropy）で暗号化して `%LOCALAPPDATA%\vrc-wrist-notifier\auth.bin`（先頭 `VWNK1\n`）に保存する（`keystore.rs`）。平文では書かず、表示・ログにも出さない。保存したらすぐ取り直し、「消す」なら取り直さずに「未入力」にする
+- キー（`auth` クッキーの値）はトレイの「設定…」の窓（`windows/src/settings.rs`、Win32 の伏せ字の入力欄）で入れる。貼り付けたものは `auth.rs` の `normalize_key` で値だけにし（`auth=…`、`Cookie: …; auth=…` も可）、DPAPI（`CryptProtectData`、ユーザー単位、アプリ固有の entropy）で暗号化して `%LOCALAPPDATA%\vrc-wrist-notifier\auth.bin`（先頭 `VWNK1\n`）に保存する（`keystore.rs`）。平文では書かず、表示・ログにも出さない。保存したらすぐ取り直し、「消す」なら取り直さずに「未入力」にする。どちらも途中の取り直しは捨てる（番号 `friends_gen` で、前のキーの結果が後から上書きしないように）
+- 取り直しの失敗は `classify_fetch` で分ける: 未入力 `nokey`、auth.bin を戻せない `unreadable`、401・2 段階認証の途中 `bad`（この 3 つは入れなおすまで自分からは取り直さない）、それ以外（オフライン・5xx・429 など）は `neterror` で、入れなおしは勧めず 1 時間あとにまた試す（パネルには出さない）
 - 0.6.1 までは環境変数 `VRCHAT_AUTH_KEY` と WSL の zsh から読んでいたが、0.7.0 でやめた（`wsl.exe` の起動が遅い・失敗すると「未設定」になり、起動しなおすまで戻らなかった）。config.json の `wsl_distro` は無視する
 - 自分の ID はログの `[Behaviour] User Authenticated: 名前 (usr_…)` から。フレンドは黄色、自分は水色。まとめカードは先頭の名前だけ色を付ける
 - トレイの「テスト通知」（種類 `info.test`）は自分で押したものなので、通知設定（フレンドのみ・オフ）に関わらず出す。SteamVR につながっていないときは VR に出せないので、トレイの吹き出しでそう言う（0.7.0）

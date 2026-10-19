@@ -2,6 +2,7 @@
 //! VRChat のキー（`auth` クッキーの値）まわりの、OS に依らない部分。
 //! 入力の整え方、保存するファイルの形、問題があるときの一言、設定の窓に出す今の状態。
 //! 暗号化（DPAPI）とファイルの読み書きは Windows だけの keystore.rs。キーは表示・ログに出さない。
+//! friends の状態: ok / none / off / nokey（未入力）/ bad（401 など、キーが効かない）/ unreadable（auth.bin を戻せない）/ neterror（オフライン・5xx など）
 
 /// 保存するファイル（auth.bin）の先頭。その後ろは DPAPI で暗号化したキー
 pub const MAGIC: &[u8] = b"VWNK1\n";
@@ -12,6 +13,10 @@ pub const TRAY_BAD: &str = "⚠ VRChat のキーが使えません（「設定�
 /// SteamVR のパネルの右下に出す一言（頭に ⚠ が付く）
 pub const PANEL_NOKEY: &str = "VRChat のキーが未入力です（PC のトレイの「設定…」から）";
 pub const PANEL_BAD: &str = "VRChat のキーが使えません（PC のトレイの「設定…」から）";
+/// 保存したキー（auth.bin）を戻せない（別の PC・別のユーザーからコピーした、壊れた、など）
+pub const UNREADABLE: &str = "保存したキーを読めません（入れなおしてください）";
+/// VRChat に問い合わせられない（オフライン・5xx など）。キーのせいではないので、入れなおしは勧めない
+pub const TRAY_NET: &str = "⚠ VRChat に問い合わせられません（あとでまた試します）";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum KeyError {
@@ -32,7 +37,8 @@ impl KeyError {
 /// 前後の空白・引用符、`auth=…`、`Cookie: auth=…; …` の形も受け付ける
 pub fn normalize_key(input: &str) -> Result<String, KeyError> {
     let mut s = input.trim();
-    if s.len() >= 7 && s[..7].eq_ignore_ascii_case("cookie:") {
+    // 先頭 7 バイトが文字の切れ目でないとき（日本語など）は get が None になるので、落ちない
+    if s.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("cookie:")) {
         s = s[7..].trim();
     }
     // 「名前=値; 名前=値」の形なら auth の値だけ
@@ -67,19 +73,22 @@ pub fn unwrap(file: &[u8]) -> Option<&[u8]> {
 }
 
 /// トレイに出す一言（friends は Status.friends: ok / nokey / bad / none / off）
-pub fn tray_problem(friends: &str) -> Option<&'static str> {
+pub fn tray_problem(friends: &str) -> Option<String> {
     match friends {
-        "nokey" => Some(TRAY_NOKEY),
-        "bad" => Some(TRAY_BAD),
+        "nokey" => Some(TRAY_NOKEY.into()),
+        "bad" => Some(TRAY_BAD.into()),
+        "unreadable" => Some(format!("⚠ {UNREADABLE}")),
+        "neterror" => Some(TRAY_NET.into()),
         _ => None,
     }
 }
 
-/// パネルの右下に出す一言
+/// パネルの右下に出す一言（問い合わせられないのは一時的で、VR の中では何もできないので出さない）
 pub fn panel_problem(friends: &str) -> Option<&'static str> {
     match friends {
         "nokey" => Some(PANEL_NOKEY),
         "bad" => Some(PANEL_BAD),
+        "unreadable" => Some(UNREADABLE),
         _ => None,
     }
 }
@@ -102,6 +111,8 @@ pub fn settings_status(saved: bool, friends: &str, refreshing: bool, count: usiz
     match friends {
         "ok" => (format!("✓ 保存済み。使えています（フレンド {count} 人）"), Tone::Good),
         "bad" => ("⚠ 保存済みですが使えません。新しいキーを入れなおしてください".into(), Tone::Warn),
+        "unreadable" => (format!("⚠ {UNREADABLE}"), Tone::Warn),
+        "neterror" => ("保存済み。VRChat に問い合わせられませんでした（あとでまた試します）".into(), Tone::Neutral),
         "off" => ("保存済み（config.json でフレンドの判定がオフです）".into(), Tone::Neutral),
         _ => ("保存済み".into(), Tone::Neutral),
     }
@@ -136,6 +147,15 @@ mod tests {
         assert_eq!(normalize_key("twoFactorAuth=xyz"), Err(KeyError::Invalid));
         assert_eq!(normalize_key("キー"), Err(KeyError::Invalid));
         assert_eq!(normalize_key(&"a".repeat(1025)), Err(KeyError::Invalid));
+        // 先頭 7 バイトが文字の切れ目でないもの（以前はここで落ちていた）
+        assert_eq!(normalize_key("認証キー"), Err(KeyError::Invalid));
+        assert_eq!(normalize_key("認証キー authcookie_xxxx"), Err(KeyError::Invalid));
+        assert_eq!(normalize_key("abcdefé"), Err(KeyError::Invalid));
+        assert_eq!(normalize_key("Cookie:認証"), Err(KeyError::Invalid));
+        // ヘッダーを足そうとするもの
+        let k = "authcookie_0123abcd";
+        assert_eq!(normalize_key(&format!("{k}\r\nX-Evil: 1")), Err(KeyError::Invalid));
+        assert_eq!(normalize_key(&format!("{k}\nX")), Err(KeyError::Invalid));
         assert!(normalize_key(&"a".repeat(1024)).is_ok());
     }
 
@@ -159,6 +179,14 @@ mod tests {
         assert!(tray_problem("bad").unwrap().contains("使えません"));
         assert!(panel_problem("nokey").unwrap().contains("トレイ"));
         assert!(!panel_problem("bad").unwrap().starts_with('⚠'));
+        // 読めないときは窓とトレイとパネルで同じ文言
+        assert!(tray_problem("unreadable").unwrap().ends_with(UNREADABLE));
+        assert_eq!(panel_problem("unreadable"), Some(UNREADABLE));
+        assert!(settings_status(true, "unreadable", false, 0).0.ends_with(UNREADABLE));
+        // 問い合わせられないときは、入れなおしを勧めない。パネルには出さない
+        assert!(!tray_problem("neterror").unwrap().contains("入れなおし"));
+        assert!(!settings_status(true, "neterror", false, 0).0.contains("入れなおし"));
+        assert_eq!(panel_problem("neterror"), None);
     }
 
     #[test]

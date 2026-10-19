@@ -93,6 +93,18 @@ pub struct FetchResult {
     pub code: String,
     pub self_id: String,
 }
+/// 取り直しに失敗したときの code → (状態, キーのせいか)。キーのせいなら、入れなおすまで自分からは取り直さない。
+/// オフライン・5xx・読めない応答などはキーのせいではないので、1 時間あとにまた試す
+pub fn classify_fetch(code: &str) -> (&'static str, bool) {
+    match code {
+        "nokey" => ("nokey", true),
+        "unreadable" => ("unreadable", true),
+        // 401: キーが切れた・ログアウトした。nofriends: 2 段階認証の途中など、そのキーではフレンドが見えない
+        "401" | "nofriends" => ("bad", true),
+        _ => ("neterror", false),
+    }
+}
+
 /// User-Agent → 結果。Windows 版では main.rs が渡す（保存したキーを読んで GET /api/1/auth/user）
 pub type Fetcher = fn(String) -> FetchResult;
 
@@ -144,7 +156,9 @@ pub struct Watcher {
     friend_ids: HashSet<String>,
     friends_at: Option<NaiveDateTime>,
     friends_try: Option<Instant>,
-    friends_job: Option<Receiver<FetchResult>>,
+    /// 取り直しの番号と結果の受け口。キーを保存・消したら番号を進め、前の取り直しの結果は捨てる
+    friends_job: Option<(u64, Receiver<FetchResult>)>,
+    friends_gen: u64,
     friends_key_bad: bool,
     friends_state: String,
     unknown_joins: Vec<Unknown>,
@@ -178,6 +192,7 @@ impl Watcher {
             friends_at: None,
             friends_try: None,
             friends_job: None,
+            friends_gen: 0,
             friends_key_bad: false,
             friends_state: "none".into(),
             unknown_joins: Vec::new(),
@@ -326,19 +341,28 @@ impl Watcher {
         std::thread::spawn(move || {
             let _ = tx.send(fetch(ua));
         });
-        self.friends_job = Some(rx);
+        self.friends_job = Some((self.friends_gen, rx));
         logf!("フレンド一覧を取り直しています（{why}）");
     }
 
     /// トレイの「フレンド一覧を取り直す」: キーを新しくしたあとでも試せるように、キーが効かなかった印も消す
+    /// 途中の取り直しがあれば、その結果は捨てて（前のキーのものかもしれない）取り直しなおす
     pub fn manual_refresh(&mut self) {
         self.cfg.friends = true;
         self.friends_key_bad = false;
+        self.abandon_friends_job();
         self.start_friends_refresh("手動");
+    }
+
+    fn abandon_friends_job(&mut self) {
+        self.friends_gen += 1;
+        // 受け口を捨てるので、裏のスレッドの結果は届かない（届いても番号が違うので使わない）
+        self.friends_job = None;
     }
 
     /// 設定の窓でキーを消したとき: 取り直しはせず「未入力」にする（今ある一覧はそのまま使う）
     pub fn key_cleared(&mut self) {
+        self.abandon_friends_job();
         self.friends_key_bad = true;
         self.friends_state = "nokey".into();
         logf!("VRChat のキーを消しました");
@@ -346,7 +370,8 @@ impl Watcher {
 
     /// 裏の取り直しが終わっていたら受け取る。wait なら終わるまで待つ
     pub fn poll_friends_refresh(&mut self, wait: bool) {
-        let Some(rx) = &self.friends_job else { return };
+        let Some((gen, rx)) = &self.friends_job else { return };
+        let gen = *gen;
         let r = if wait {
             rx.recv().unwrap_or_else(|_| FetchResult { code: "error".into(), ..Default::default() })
         } else {
@@ -357,6 +382,9 @@ impl Watcher {
             }
         };
         self.friends_job = None;
+        if gen != self.friends_gen {
+            return;
+        }
         if r.ok {
             self.friend_ids = r.ids.iter().cloned().collect();
             self.friends_at = Some(now());
@@ -375,21 +403,14 @@ impl Watcher {
                 self.history(&u.ts, &u.kind, &u.name, &u.world, &u.wid, true, false);
             }
         } else {
-            match r.code.as_str() {
-                "nokey" => {
-                    self.friends_key_bad = true;
-                    self.friends_state = "nokey".into();
-                    logf!("VRChat のキーが入力されていないので、フレンドの色分けはしません（トレイの「設定…」から入力できます）");
-                }
-                "401" => {
-                    self.friends_key_bad = true;
-                    self.friends_state = "bad".into();
-                    logf!("VRChat のキーが効きません（401）。設定の窓で入れなおすまで、今ある一覧を使います");
-                }
-                code => {
-                    self.friends_state = "bad".into();
-                    logf!("VRChat のキーでフレンド一覧を取れませんでした（{code}）。今ある一覧を使い、1 時間あとにまた試します");
-                }
+            let (state, key_bad) = classify_fetch(&r.code);
+            self.friends_state = state.into();
+            self.friends_key_bad = key_bad;
+            match state {
+                "nokey" => logf!("VRChat のキーが入力されていないので、フレンドの色分けはしません（トレイの「設定…」から入力できます）"),
+                "unreadable" => logf!("保存したキー（auth.bin）を読めません。設定の窓で入れなおすまで、今ある一覧を使います"),
+                "bad" => logf!("VRChat のキーが効きません（{}）。設定の窓で入れなおすまで、今ある一覧を使います", r.code),
+                _ => logf!("VRChat に問い合わせられませんでした（{}）。今ある一覧を使い、1 時間あとにまた試します", r.code),
             }
         }
     }

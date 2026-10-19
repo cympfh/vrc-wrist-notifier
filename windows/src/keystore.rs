@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! VRChat のキーを %LOCALAPPDATA%\vrc-wrist-notifier\auth.bin に保存する（Windows だけ）。
 //! DPAPI（CryptProtectData）で、この PC のこの Windows ユーザーだけが戻せる形に暗号化する。平文では書かない。
-//! キーは表示・ログに出さない。使い終わった平文のバッファは 0 で埋める。
+//! キーは表示・ログに出さない。使い終わった平文のバッファは 0 で埋める（best effort。String の作り直しや
+//! OS・入力欄の中に残る写しまでは消せない）。
 use std::path::PathBuf;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Cryptography::{
@@ -61,13 +62,17 @@ fn unprotect(sealed: &[u8]) -> Option<Vec<u8>> {
     (ok != 0).then(|| unsafe { take(out) })
 }
 
-/// 保存したキー（無い・戻せないときは None）
-pub fn load() -> Option<String> {
-    let file = std::fs::read(path()).ok()?;
-    let mut plain = unprotect(vwn::auth::unwrap(&file)?)?;
+/// 保存したキー。無ければ Ok(None)、あるのに戻せない（形が違う・別のユーザーの DPAPI など）なら Err
+pub fn load() -> Result<Option<String>, ()> {
+    let file = match std::fs::read(path()) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let mut plain = unprotect(vwn::auth::unwrap(&file).ok_or(())?).ok_or(())?;
     let key = std::str::from_utf8(&plain).ok().map(String::from);
     wipe(&mut plain);
-    key.filter(|k| !k.is_empty())
+    key.filter(|k| !k.is_empty()).map(Some).ok_or(())
 }
 
 /// 暗号化して保存する（一時ファイルに書いてから置き換える）

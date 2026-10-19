@@ -37,7 +37,7 @@ pub fn problems(s: &Status) -> Vec<String> {
         v.push("⚠ VRChat のログ出力が Full ではありません".into());
     }
     if let Some(p) = vwn::auth::tray_problem(&s.friends) {
-        v.push(p.into());
+        v.push(p);
     }
     v
 }
@@ -106,7 +106,11 @@ impl Ui {
 }
 
 /// トレイのアイコンから吹き出し（Windows 10/11 では通知センターの通知）を出す。
-/// tray-icon はアイコンの uID を公開していないので、そのアイコンの窓で NIM_MODIFY が通る uID を探す（1 つの窓に 1 つだけ）
+/// tray-icon（0.21）はアイコンの uID を公開していないので、NIM_MODIFY が通る uID を探す。これで当たる理由:
+/// - tray-icon はアイコン 1 つごとに専用の隠し窓を作り、その窓に uID を 1 つだけ登録する（window_handle() がその窓）。
+///   なので別の uID で NIM_MODIFY しても、ほかのアイコン（ほかのアプリも含む）を書き換えることはなく、失敗するだけ
+/// - uID はプロセス内の連番（1 から始まり、TrayIconId を作るときにも 1 つ進む）。このアプリはアイコンを 1 つしか作らないので 1〜2、
+///   版が変わって順番がずれても 8 までで足りる
 fn balloon(tray: &TrayIcon, title: &str, text: &str) {
     use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
     fn put(dst: &mut [u16], s: &str) {
@@ -210,7 +214,9 @@ pub fn run(cfg: Config, cfg_path: PathBuf) {
                 std::process::exit(0);
             } else if ev.id == ui.settings {
                 let tx = tx.clone();
-                crate::settings::open(&shared.lock().unwrap().clone(), move |e| {
+                // 窓を作るあいだ Mutex を握らないように、先に写しておく
+                let st = shared.lock().unwrap().clone();
+                crate::settings::open(&st, move |e| {
                     let _ = tx.send(match e {
                         crate::settings::KeyEvent::Saved => Cmd::KeySaved,
                         crate::settings::KeyEvent::Cleared => Cmd::KeyCleared,

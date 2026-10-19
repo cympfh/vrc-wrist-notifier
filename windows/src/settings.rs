@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! 設定の窓（トレイの「設定…」）。VRChat のキーを伏せ字で入れて「保存」すると、暗号化して保存し（keystore.rs）、
 //! すぐにフレンド一覧を取り直す。「消す」で保存したキーを消す。窓はトレイと同じスレッド（メッセージループは tray.rs）。
-//! 入れたキーは窓にもログにも出さない。保存したら入力欄は空にする。
+//! 入れたキーは窓にもログにも出さない。保存したら入力欄は空にする。平文のバッファを 0 で埋めるのはできる範囲で（best effort）。
 use std::cell::{Cell, RefCell};
 use vwn::auth::{self, Tone};
 use vwn::watcher::Status;
@@ -11,7 +11,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     WHITE_BRUSH,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -28,6 +28,8 @@ const ID_HOWTO: usize = 102;
 const EM_SETCUEBANNER: u32 = 0x1501;
 const HOWTO_URL: &str = "https://github.com/cympfh/vrc-wrist-notifier#vrchat-key";
 
+type Callback = Box<dyn Fn(KeyEvent)>;
+
 #[derive(Clone, Copy)]
 struct Hw {
     win: HWND,
@@ -42,7 +44,7 @@ thread_local! {
     static TONE: Cell<Tone> = const { Cell::new(Tone::Neutral) };
     static MSG_TONE: Cell<Tone> = const { Cell::new(Tone::Neutral) };
     static FONTS: RefCell<Vec<HFONT>> = const { RefCell::new(Vec::new()) };
-    static CB: RefCell<Option<Box<dyn Fn(KeyEvent)>>> = const { RefCell::new(None) };
+    static CB: RefCell<Option<Callback>> = const { RefCell::new(None) };
     static LAST: RefCell<Option<(String, bool)>> = const { RefCell::new(None) };
     static STATUS: RefCell<Option<Status>> = const { RefCell::new(None) };
 }
@@ -119,7 +121,7 @@ fn wipe16(b: &mut [u16]) {
 fn on_save(h: Hw) {
     let mut buf = vec![0u16; 4096];
     let n = unsafe { GetWindowTextW(h.edit, buf.as_mut_ptr(), buf.len() as i32) }.max(0) as usize;
-    let mut text = String::from_utf16_lossy(&buf[..n]);
+    let mut text = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
     wipe16(&mut buf);
     let r = auth::normalize_key(&text);
     unsafe { text.as_bytes_mut().fill(0) };
@@ -193,10 +195,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             DestroyWindow(hwnd);
             0
         }
+        WM_DPICHANGED => {
+            // 別の DPI のモニターに移った: Windows が勧める大きさにして、文字と子の窓を並べなおす
+            let r = &*(lp as *const RECT);
+            SetWindowPos(hwnd, std::ptr::null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            apply_dpi(((wp >> 16) & 0xffff) as u32);
+            0
+        }
         WM_DESTROY => {
             // トレイのアプリは動き続けるので PostQuitMessage はしない
             HW.with(|h| h.set(None));
             LAST.with(|l| *l.borrow_mut() = None);
+            LAYOUT.with(|l| l.borrow_mut().clear());
             FONTS.with(|f| {
                 for x in f.borrow_mut().drain(..) {
                     DeleteObject(x as _);
@@ -223,6 +233,49 @@ pub fn open(status: &Status, cb: impl Fn(KeyEvent) + 'static) {
     update(status);
 }
 
+/// 文字の大きさ（96 DPI のときの px）と太さ。LAYOUT の 3 つめはここの番号
+const FONT_SPECS: [(f32, bool); 5] = [(26.0, true), (15.0, false), (17.0, false), (14.0, false), (16.0, false)];
+const F_HEAD: usize = 0;
+const F_BODY: usize = 1;
+const F_EDIT: usize = 2;
+const F_SMALL: usize = 3;
+const F_BTN: usize = 4;
+const CLIENT_W: f32 = 620.0;
+const CLIENT_H: f32 = 380.0;
+
+thread_local! {
+    /// 子の窓と、96 DPI のときの位置・大きさ、文字の番号（DPI が変わったら並べなおすため）
+    static LAYOUT: RefCell<Vec<(HWND, [f32; 4], usize)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn scale(v: f32, dpi: u32) -> i32 {
+    (v * dpi.max(96) as f32 / 96.0).round() as i32
+}
+
+/// 文字を作りなおして、子の窓をその DPI で並べなおす
+unsafe fn apply_dpi(dpi: u32) {
+    let face = w("Yu Gothic UI");
+    let fonts: Vec<HFONT> = FONT_SPECS
+        .iter()
+        .map(|&(px, bold)| {
+            CreateFontW(
+                -scale(px, dpi), 0, 0, 0, if bold { 600 } else { 400 }, 0, 0, 0, DEFAULT_CHARSET as _, 0, 0,
+                CLEARTYPE_QUALITY as _, 0, face.as_ptr(),
+            )
+        })
+        .collect();
+    LAYOUT.with(|l| {
+        for &(h, [x, y, cw, ch], f) in l.borrow().iter() {
+            SetWindowPos(h, std::ptr::null_mut(), scale(x, dpi), scale(y, dpi), scale(cw, dpi), scale(ch, dpi), SWP_NOZORDER | SWP_NOACTIVATE);
+            SendMessageW(h, WM_SETFONT, fonts[f] as WPARAM, 1);
+        }
+    });
+    let old = FONTS.with(|v| std::mem::replace(&mut *v.borrow_mut(), fonts));
+    for f in old {
+        DeleteObject(f as _);
+    }
+}
+
 unsafe fn create() {
     let hinst = GetModuleHandleW(std::ptr::null());
     let class = w("vrc-wrist-notifier-settings");
@@ -236,21 +289,10 @@ unsafe fn create() {
     wc.lpszClassName = class.as_ptr();
     RegisterClassExW(&wc); // 2 回目以降は失敗するが、登録は残っている
 
-    let dpi = GetDpiForSystem().max(96) as f32;
-    let s = |v: f32| (v * dpi / 96.0).round() as i32;
-    let font = |px: f32, bold: bool| {
-        let f = CreateFontW(
-            -s(px), 0, 0, 0, if bold { 600 } else { 400 }, 0, 0, 0, DEFAULT_CHARSET as _, 0, 0, CLEARTYPE_QUALITY as _, 0,
-            w("Yu Gothic UI").as_ptr(),
-        );
-        FONTS.with(|v| v.borrow_mut().push(f));
-        f
-    };
-    let (f_head, f_body, f_edit, f_small, f_btn) = (font(26.0, true), font(15.0, false), font(17.0, false), font(14.0, false), font(16.0, false));
-
-    let (cw, ch, pad) = (620.0, 380.0, 36.0);
+    let dpi = GetDpiForSystem();
+    let pad = 36.0;
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    let mut r = RECT { left: 0, top: 0, right: s(cw), bottom: s(ch) };
+    let mut r = RECT { left: 0, top: 0, right: scale(CLIENT_W, dpi), bottom: scale(CLIENT_H, dpi) };
     AdjustWindowRectEx(&mut r, style, 0, WS_EX_CONTROLPARENT);
     let (ww, wh) = (r.right - r.left, r.bottom - r.top);
     let (sx, sy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
@@ -263,33 +305,35 @@ unsafe fn create() {
         vwn::logf!("設定の窓を作れませんでした（{}）", std::io::Error::last_os_error());
         return;
     }
-    let child = |cls: &str, text: &str, st: u32, ex: u32, x: f32, y: f32, cw_: f32, ch_: f32, id: usize, f: HFONT| {
+    LAYOUT.with(|l| l.borrow_mut().clear());
+    let child = |cls: &str, text: &str, st: u32, ex: u32, rect: [f32; 4], id: usize, font: usize| {
         let (c, t) = (w(cls), w(text));
         let h = CreateWindowExW(
-            ex, c.as_ptr(), t.as_ptr(), WS_CHILD | WS_VISIBLE | st, s(x), s(y), s(cw_), s(ch_), win, id as _, hinst,
-            std::ptr::null(),
+            ex, c.as_ptr(), t.as_ptr(), WS_CHILD | WS_VISIBLE | st, 0, 0, 0, 0, win, id as _, hinst, std::ptr::null(),
         );
-        SendMessageW(h, WM_SETFONT, f as WPARAM, 1);
+        LAYOUT.with(|l| l.borrow_mut().push((h, rect, font)));
         h
     };
-    let inner = cw - 2.0 * pad;
-    child("STATIC", "VRChat のキー", 0, 0, pad, 26.0, inner, 40.0, 0, f_head);
+    let inner = CLIENT_W - 2.0 * pad;
+    child("STATIC", "VRChat のキー", 0, 0, [pad, 26.0, inner, 40.0], 0, F_HEAD);
     child(
         "STATIC",
         "フレンドの名前を黄色にするために使います（無くても通知は出ます）。\r\nキーは暗号化して、この PC のこの Windows ユーザーだけが読める形で保存します。",
-        0, 0, pad, 76.0, inner, 48.0, 0, f_small,
+        0, 0, [pad, 76.0, inner, 48.0], 0, F_SMALL,
     );
-    let status = child("STATIC", "", 0, 0, pad, 134.0, inner, 26.0, 0, f_body);
+    let status = child("STATIC", "", 0, 0, [pad, 134.0, inner, 26.0], 0, F_BODY);
     let edit = child(
-        "EDIT", "", (ES_PASSWORD | ES_AUTOHSCROLL) as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, pad, 174.0, inner, 42.0, ID_EDIT, f_edit,
+        "EDIT", "", (ES_PASSWORD | ES_AUTOHSCROLL) as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, [pad, 174.0, inner, 42.0], ID_EDIT, F_EDIT,
     );
     let cue = w("authcookie_… をここに貼り付け");
     SendMessageW(edit, EM_SETCUEBANNER, 1, cue.as_ptr() as LPARAM);
-    let msg = child("STATIC", "", 0, 0, pad, 224.0, inner, 24.0, 0, f_small);
-    let (bh, by) = (46.0, ch - pad - 46.0);
-    child("BUTTON", "キーの調べ方", BS_PUSHBUTTON as u32 | WS_TABSTOP, 0, pad, by, 170.0, bh, ID_HOWTO, f_btn);
-    let clear = child("BUTTON", "消す", BS_PUSHBUTTON as u32 | WS_TABSTOP, 0, cw - pad - 260.0, by, 120.0, bh, ID_CLEAR, f_btn);
-    child("BUTTON", "保存", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP, 0, cw - pad - 128.0, by, 128.0, bh, ID_SAVE, f_btn);
+    let msg = child("STATIC", "", 0, 0, [pad, 224.0, inner, 24.0], 0, F_SMALL);
+    let (bh, by) = (46.0, CLIENT_H - pad - 46.0);
+    child("BUTTON", "キーの調べ方", BS_PUSHBUTTON as u32 | WS_TABSTOP, 0, [pad, by, 170.0, bh], ID_HOWTO, F_BTN);
+    let clear = child("BUTTON", "消す", BS_PUSHBUTTON as u32 | WS_TABSTOP, 0, [CLIENT_W - pad - 260.0, by, 120.0, bh], ID_CLEAR, F_BTN);
+    child("BUTTON", "保存", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP, 0, [CLIENT_W - pad - 128.0, by, 128.0, bh], ID_SAVE, F_BTN);
+    // 実際に出たモニターの DPI で並べる（システムの DPI と違うモニターのこともある）
+    apply_dpi(GetDpiForWindow(win));
     HW.with(|h| h.set(Some(Hw { win, edit, status, msg, clear })));
     ShowWindow(win, SW_SHOWNORMAL);
     SetForegroundWindow(win);

@@ -7,9 +7,16 @@ use vwn::watcher::FetchResult;
 
 pub fn fetch(ua: String) -> FetchResult {
     let mut r = FetchResult::default();
-    let Some(key) = crate::keystore::load() else {
-        r.code = "nokey".into();
-        return r;
+    let key = match crate::keystore::load() {
+        Ok(Some(k)) => k,
+        Ok(None) => {
+            r.code = "nokey".into();
+            return r;
+        }
+        Err(()) => {
+            r.code = "unreadable".into();
+            return r;
+        }
     };
     let tls = match native_tls::TlsConnector::new() {
         Ok(t) => t,
