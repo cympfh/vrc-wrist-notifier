@@ -47,6 +47,7 @@ VRChat ──書く──▶ output_log_*.txt ──読む──▶ vrc-wrist-no
 - キー（`auth` クッキーの値）はトレイの「設定…」の窓（`windows/src/settings.rs`、Win32 の伏せ字の入力欄）で入れる。貼り付けたものは `auth.rs` の `normalize_key` で値だけにし（`auth=…`、`Cookie: …; auth=…` も可）、DPAPI（`CryptProtectData`、ユーザー単位、アプリ固有の entropy）で暗号化して `%LOCALAPPDATA%\vrc-wrist-notifier\auth.bin`（先頭 `VWNK1\n`）に保存する（`keystore.rs`）。平文では書かず、表示・ログにも出さない。保存したらすぐ取り直し、「消す」なら取り直さずに「未入力」にする
 - 0.6.1 までは環境変数 `VRCHAT_AUTH_KEY` と WSL の zsh から読んでいたが、0.7.0 でやめた（`wsl.exe` の起動が遅い・失敗すると「未設定」になり、起動しなおすまで戻らなかった）。config.json の `wsl_distro` は無視する
 - 自分の ID はログの `[Behaviour] User Authenticated: 名前 (usr_…)` から。フレンドは黄色、自分は水色。まとめカードは先頭の名前だけ色を付ける
+- トレイの「テスト通知」（種類 `info.test`）は自分で押したものなので、通知設定（フレンドのみ・オフ）に関わらず出す。SteamVR につながっていないときは VR に出せないので、トレイの吹き出しでそう言う（0.7.0）
 - 「フレンドのみ」が効くのは参加・退出だけ。まとめカードはフレンドと自分だけで数えなおす。「オフ」はどの通知も出さない。履歴はどれでも全員
 
 ## 拾うログの行

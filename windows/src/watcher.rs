@@ -249,9 +249,9 @@ impl Watcher {
         self.send_toast(kind, title, text, "", "", false, "", false, &[], false, "");
     }
 
-    /// トレイの「テスト通知」: テスト通知を 1 件
+    /// トレイの「テスト通知」: テスト通知を 1 件（通知設定に関わらず出る）
     pub fn send_test(&mut self) {
-        self.simple_toast("join", "テスト", "vrc-wrist-notifier から届きました");
+        self.simple_toast(crate::toast::TEST_KIND, "テスト通知", "vrc-wrist-notifier から届きました");
     }
 
     // ------------------------------------------------------------ フレンド（0.4.0）

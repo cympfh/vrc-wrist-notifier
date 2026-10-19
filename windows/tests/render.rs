@@ -163,3 +163,22 @@ fn concurrent_appends_do_not_interleave() {
     h.load();
     assert_eq!(h.events().len(), 800);
 }
+
+#[test]
+fn test_toast_ignores_notify_setting() {
+    let t = Toast::new(toast::TEST_KIND, "テスト通知", "vrc-wrist-notifier から届きました");
+    for mode in [Notify::All, Notify::Friends, Notify::Off] {
+        let shown = toast::filter_people(&t, mode, &[], "");
+        assert_eq!(shown.len(), 1, "{mode:?}");
+        assert_eq!(shown[0].title, "テスト通知");
+    }
+    // ふつうの参加は今までどおり絞られる
+    assert!(toast::filter_people(&Toast::new("join", "テスト", "が参加しました"), Notify::Friends, &[], "").is_empty());
+    assert!(!toast::is_alert(toast::TEST_KIND));
+}
+
+#[test]
+fn test_feedback_only_when_vr_is_down() {
+    assert_eq!(toast::test_feedback(true), None);
+    assert!(toast::test_feedback(false).unwrap().contains("SteamVR"));
+}

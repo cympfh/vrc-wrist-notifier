@@ -62,7 +62,7 @@ fn build_menu(s: &Status) -> (Menu, [MenuId; 5]) {
     }
     let _ = menu.append(&PredefinedMenuItem::separator());
     let settings = MenuItem::new("設定…", true, None);
-    let test = MenuItem::new("テスト通知", true, None);
+    let test = MenuItem::new("テスト通知（VR に出す）", true, None);
     let refresh = MenuItem::new("フレンド一覧を取り直す", !s.refreshing, None);
     let open_log = MenuItem::new("ログを開く", vwn::log::path().is_some(), None);
     let quit = MenuItem::new("終了", true, None);
@@ -103,6 +103,33 @@ impl Ui {
         let _ = self.tray.set_icon(Some(icon(!problems(s).is_empty())));
         (self.test, self.settings, self.refresh, self.open_log, self.quit) = (test, settings, refresh, open_log, quit);
     }
+}
+
+/// トレイのアイコンから吹き出し（Windows 10/11 では通知センターの通知）を出す。
+/// tray-icon はアイコンの uID を公開していないので、そのアイコンの窓で NIM_MODIFY が通る uID を探す（1 つの窓に 1 つだけ）
+fn balloon(tray: &TrayIcon, title: &str, text: &str) {
+    use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW};
+    fn put(dst: &mut [u16], s: &str) {
+        let n = dst.len() - 1;
+        for (d, c) in dst.iter_mut().zip(s.encode_utf16().take(n).chain(std::iter::repeat(0))) {
+            *d = c;
+        }
+    }
+    let hwnd = tray.window_handle();
+    for uid in 1..=8u32 {
+        let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = uid;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_INFO;
+        put(&mut nid.szInfoTitle, title);
+        put(&mut nid.szInfo, text);
+        if unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) } != 0 {
+            return;
+        }
+    }
+    logf!("トレイの吹き出しを出せませんでした");
 }
 
 fn open_path(p: &std::path::Path) {
@@ -190,7 +217,16 @@ pub fn run(cfg: Config, cfg_path: PathBuf) {
                     });
                 });
             } else if ev.id == ui.test {
-                let _ = tx.send(Cmd::Test);
+                let vr = crate::vr::CONNECTED.load(std::sync::atomic::Ordering::Relaxed);
+                match vwn::toast::test_feedback(vr) {
+                    Some(m) => {
+                        logf!("テスト通知: {m}");
+                        balloon(&ui.tray, "テスト通知", m);
+                    }
+                    None => {
+                        let _ = tx.send(Cmd::Test);
+                    }
+                }
             } else if ev.id == ui.refresh {
                 let _ = tx.send(Cmd::Refresh);
             } else if ev.id == ui.open_log {
