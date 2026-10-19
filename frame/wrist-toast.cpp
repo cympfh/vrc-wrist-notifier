@@ -784,6 +784,7 @@ int main(int argc, char** argv) {
     std::string beat_version, beat_log, beat_friends;
     const double kAlive = 90;   // heartbeat（30 秒ごと）3 回分
     const double started_at = now_s();
+    bool watcher_down = false;
 
     while (!g_stop) {
         double now = now_s();
@@ -850,6 +851,10 @@ int main(int argc, char** argv) {
             if (now - beat_at < kAlive) { st.watcher = WatchStatus::On; st.version = beat_version; st.log = beat_log; st.friends = beat_friends; }
             else if (now - packet_at < kAlive) st.watcher = WatchStatus::Old;
             else st.down = now - started_at >= kAlive;   // 起動してから 90 秒は待つ
+            if (st.down != watcher_down) {
+                watcher_down = st.down;
+                if (st.down) logf("Windows 側の見張りの知らせが %.0f 秒以上来ていません（パネルの右下に出します）", kAlive);
+            }
             panel_dirty |= panel.set_status(st);
         }
 
