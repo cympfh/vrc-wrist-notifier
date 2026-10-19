@@ -7,6 +7,7 @@ pub mod history;
 pub mod hub;
 pub mod panel;
 pub mod toast;
+pub mod upload;
 pub mod log;
 pub mod watcher;
 
