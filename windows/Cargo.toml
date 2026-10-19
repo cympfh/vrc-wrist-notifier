@@ -1,6 +1,6 @@
 [package]
 name = "vrc-wrist-notifier"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT"
 description = "VRChat のログを読んで SteamVR に参加・退出などを通知する（Windows、システムトレイ常駐）"
@@ -22,6 +22,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
 tray-icon = "0.21"
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"

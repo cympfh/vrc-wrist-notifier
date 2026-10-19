@@ -23,6 +23,8 @@ mod friends_api;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]
+mod d3d;
+#[cfg(windows)]
 mod vr;
 
 #[derive(Default)]

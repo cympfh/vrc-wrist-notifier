@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use crate::d3d::{Gpu, Surface};
 use vwn::config::Config;
 use vwn::hub::Hub;
 use vwn::logf;
@@ -33,6 +34,12 @@ struct Event {
 struct Matrix34([[f32; 4]; 3]);
 #[repr(C)]
 struct Vec2(f32, f32);
+#[repr(C)]
+struct Texture {
+    handle: *mut c_void,
+    kind: i32,
+    color_space: i32,
+}
 
 const EV_MOUSE_MOVE: u32 = 300;
 const EV_MOUSE_DOWN: u32 = 301;
@@ -60,10 +67,14 @@ const OV_HIDE_OVERLAY: usize = 44;
 const OV_POLL_NEXT_OVERLAY_EVENT: usize = 48;
 const OV_SET_OVERLAY_INPUT_METHOD: usize = 50;
 const OV_SET_OVERLAY_MOUSE_SCALE: usize = 52;
+const OV_SET_OVERLAY_TEXTURE: usize = 60;
 const OV_SET_OVERLAY_RAW: usize = 62;
 const OV_CREATE_DASHBOARD_OVERLAY: usize = 67;
 // IVRSystem_026 の関数表での位置（VR_IVRSystem_FnTable、全 51 個）
+const SYS_GET_DXGI_OUTPUT_INFO: usize = 8;
 const SYS_POLL_NEXT_EVENT: usize = 30;
+const TEXTURE_TYPE_DIRECTX: i32 = 0;
+const COLOR_SPACE_AUTO: i32 = 0;
 
 /// VR_InitInternal のアプリの種類。Background は SteamVR を起動しない（動いていなければ 121 で失敗する）
 const APP_OVERLAY: i32 = 2;
@@ -177,6 +188,16 @@ impl Api {
     fn raw(&self, h: H, rgba: &mut [u8], w: u32, hgt: u32) -> i32 {
         unsafe { call!(self.ov, OV_SET_OVERLAY_RAW, fn(H, *mut c_void, u32, u32, u32) -> i32, h, rgba.as_mut_ptr() as *mut c_void, w, hgt, 4) }
     }
+    fn texture(&self, h: H, tex: *mut c_void) -> i32 {
+        let t = Texture { handle: tex, kind: TEXTURE_TYPE_DIRECTX, color_space: COLOR_SPACE_AUTO };
+        unsafe { call!(self.ov, OV_SET_OVERLAY_TEXTURE, fn(H, *const Texture) -> i32, h, &t) }
+    }
+    /// SteamVR が使っている GPU の番号（DXGI のアダプタ）
+    fn dxgi_adapter(&self) -> Option<u32> {
+        let mut i: i32 = -1;
+        unsafe { call!(self.sys, SYS_GET_DXGI_OUTPUT_INFO, fn(*mut i32) -> (), &mut i) };
+        (i >= 0).then_some(i as u32)
+    }
     fn poll_system(&self) -> Option<Event> {
         let mut e: Event = unsafe { std::mem::zeroed() };
         let ok = unsafe { call!(self.sys, SYS_POLL_NEXT_EVENT, fn(*mut Event, u32) -> bool, &mut e, std::mem::size_of::<Event>() as u32) };
@@ -251,6 +272,10 @@ struct Session {
     panel_dirty: bool,
     checked_at: Instant,
     showing: Option<(Instant, f64)>,
+    /// 絵は作りっぱなしの D3D11 テクスチャで渡す（d3d.rs）。作れなければ SetOverlayRaw（ちらつく）
+    gpu: Option<Gpu>,
+    toast_sf: Option<Surface>,
+    panel_sf: Option<Surface>,
 }
 
 impl Session {
@@ -268,13 +293,17 @@ impl Session {
         };
         let mut s = Session {
             api, pid, toast, panel: INVALID, thumb: INVALID, panel_visible: false, panel_version: None, panel_dirty: true,
-            checked_at: Instant::now(), alive_at: Instant::now(), showing: None,
+            checked_at: Instant::now(), alive_at: Instant::now(), showing: None, gpu: None, toast_sf: None, panel_sf: None,
         };
         if cfg.history_panel {
             s.make_panel(cfg, strict);
         }
         if strict && (toast == INVALID || (cfg.history_panel && s.panel == INVALID)) {
             return None; // Drop で作れた分は消してから離れる
+        }
+        match Gpu::new(s.api.dxgi_adapter()) {
+            Ok(g) => s.gpu = Some(g),
+            Err(e) => logf!("D3D11 を使えないので SetOverlayRaw で渡します（ちらつくことがあります）: {e}"),
         }
         if toast != INVALID {
             s.api.width(toast, cfg.toast_width_m as f32);
@@ -300,6 +329,9 @@ impl Session {
                 self.api.raw(t, &mut icon.0, icon.1, icon.2);
                 self.panel_dirty = true;
                 self.panel_version = None;
+                if let Some(sf) = self.panel_sf.as_mut() {
+                    sf.forget_last(); // 作り直したパネルには、同じ絵でも渡しなおす
+                }
             }
             Err(e) if !quiet => logf!("ダッシュボードのパネルを作れません（{e}）"),
             Err(_) => {}
@@ -354,7 +386,7 @@ impl Session {
             if self.panel_dirty && (self.panel_visible || self.panel_version.is_none()) {
                 let c = hub.panel.render(hub.history.events());
                 let mut px = c.to_rgba();
-                if self.api.raw(self.panel, &mut px, panel::W, panel::H) == 0 {
+                if self.upload(true, &mut px, panel::W, panel::H) == 0 {
                     self.panel_dirty = false;
                     self.panel_version = Some(hub.history.version());
                 }
@@ -382,9 +414,37 @@ impl Session {
         true
     }
 
+    /// 絵を渡す（panel = true ならパネル、false なら通知）。前と同じ中身なら何もしないで 0。
+    /// D3D11 が使えるときは 2 枚のテクスチャを交互に書き換えて SetOverlayTexture（作り直さないのでちらつかない）
+    fn upload(&mut self, panel: bool, rgba: &mut [u8], w: u32, h: u32) -> i32 {
+        let ov = if panel { self.panel } else { self.toast };
+        if let Some(gpu) = &self.gpu {
+            let slot = if panel { &mut self.panel_sf } else { &mut self.toast_sf };
+            if slot.is_none() {
+                match gpu.surface(w, h) {
+                    Ok(sf) => *slot = Some(sf),
+                    Err(e) => logf!("テクスチャを作れません: {e}"),
+                }
+            }
+            if let Some(sf) = slot.as_mut() {
+                return match sf.write(gpu, rgba) {
+                    Some(tex) => {
+                        let e = self.api.texture(ov, tex);
+                        if e != 0 {
+                            sf.forget_last();
+                        }
+                        e
+                    }
+                    None => 0,
+                };
+            }
+        }
+        self.api.raw(ov, rgba, w, h)
+    }
+
     fn show_toast(&mut self, t: &Toast, cfg: &Config) {
         let mut px = toast::render(t).to_rgba();
-        let e = self.api.raw(self.toast, &mut px, toast::W, toast::H);
+        let e = self.upload(false, &mut px, toast::W, toast::H);
         if e != 0 {
             logf!("通知を出せません（{e}）");
             return;
